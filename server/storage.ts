@@ -6,7 +6,7 @@ import {
   supportTickets, ticketReplies, resources, notifications, payments, sessions,
   approvals, sessionNotes, hourLogs, styles, materials, costSheets, legalDocuments, documentTemplates,
   adminNotifications, adminTasks,
-  clientOnboarding,
+  clientOnboarding, onboardingProgress,
   type User, type InsertUser,
   type Project, type InsertProject,
   type Milestone, type InsertMilestone,
@@ -30,6 +30,7 @@ import {
   type AdminNotification, type InsertAdminNotification,
   type AdminTask, type InsertAdminTask,
   type ClientOnboarding, type InsertClientOnboarding,
+  type OnboardingProgress,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -136,11 +137,20 @@ export interface IStorage {
   updateAdminTask(id: number, data: Partial<InsertAdminTask>): AdminTask;
   getOverdueTaskCount(): number;
 
-  // Onboarding
+  // Onboarding (client_onboarding legacy)
   getOnboardingByUserId(userId: number): ClientOnboarding | undefined;
   createOnboarding(data: InsertClientOnboarding): ClientOnboarding;
   updateOnboardingStep(userId: number, step: number): void;
   completeOnboarding(userId: number, signatureText: string): ClientOnboarding;
+
+  // Onboarding Progress (new)
+  getOnboardingProgress(userId: number): OnboardingProgress[];
+  completeOnboardingStep(userId: number, step: string, data?: string): OnboardingProgress;
+  getOnboardingStatusForUser(userId: number): {
+    status: "not_started" | "in_progress" | "completed";
+    completedSteps: string[];
+    currentStep: string;
+  };
 
   // ===== ADMIN METHODS =====
   getAllClients(): User[];
@@ -458,7 +468,22 @@ sqlite.exec(`
     step5_viewed INTEGER NOT NULL DEFAULT 0,
     step6_completed INTEGER NOT NULL DEFAULT 0
   );
+
+  CREATE TABLE IF NOT EXISTS onboarding_progress (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    step TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    data TEXT
+  );
 `);
+
+// Add onboarding_status column to users — idempotent
+try {
+  sqlite.exec(`ALTER TABLE users ADD COLUMN onboarding_status TEXT NOT NULL DEFAULT 'not_started'`);
+} catch {
+  // Column already exists — ignore
+}
 
 export class DatabaseStorage implements IStorage {
   getUserByEmail(email: string): User | undefined {
@@ -780,7 +805,10 @@ export class DatabaseStorage implements IStorage {
 
   completeOnboarding(userId: number, signatureText: string): ClientOnboarding {
     const now = new Date().toISOString();
-    return db.update(clientOnboarding)
+
+    // Update legacy client_onboarding record
+    const record = db
+      .update(clientOnboarding)
       .set({
         completedAt: now,
         signatureText,
@@ -790,6 +818,124 @@ export class DatabaseStorage implements IStorage {
       .where(eq(clientOnboarding.userId, userId))
       .returning()
       .get();
+
+    // Set onboarding_status = "completed" on users table
+    db.update(users)
+      .set({ onboardingStatus: "completed" })
+      .where(eq(users.id, userId))
+      .run();
+
+    // Create admin notification for completed onboarding
+    const user = db.select().from(users).where(eq(users.id, userId)).get();
+    if (user) {
+      db.insert(adminNotifications)
+        .values({
+          type: "onboarding_complete",
+          title: `Client onboarding complete: ${user.name}`,
+          message: `${user.name} (${user.brandName}) has completed the portal onboarding walkthrough and provided their digital sign-off.`,
+          clientName: user.name,
+          projectId: null,
+          relatedId: userId,
+          isRead: 0,
+          priority: "normal",
+          createdAt: now,
+        })
+        .run();
+    }
+
+    return record;
+  }
+
+  getOnboardingProgress(userId: number): OnboardingProgress[] {
+    return db
+      .select()
+      .from(onboardingProgress)
+      .where(eq(onboardingProgress.userId, userId))
+      .all();
+  }
+
+  completeOnboardingStep(
+    userId: number,
+    step: string,
+    data?: string
+  ): OnboardingProgress {
+    const now = new Date().toISOString();
+
+    // Upsert: delete existing record for this step first (idempotent)
+    db.delete(onboardingProgress)
+      .where(
+        and(
+          eq(onboardingProgress.userId, userId),
+          eq(onboardingProgress.step, step)
+        )
+      )
+      .run();
+
+    const record = db
+      .insert(onboardingProgress)
+      .values({ userId, step, completedAt: now, data: data ?? null })
+      .returning()
+      .get();
+
+    // Advance user onboarding_status to "in_progress" if not already completed
+    const user = db.select().from(users).where(eq(users.id, userId)).get();
+    if (user && user.onboardingStatus === "not_started") {
+      db.update(users)
+        .set({ onboardingStatus: "in_progress" })
+        .where(eq(users.id, userId))
+        .run();
+    }
+
+    // Also mark the legacy step flag on client_onboarding
+    const STEP_ORDER = [
+      "welcome",
+      "brand_profile",
+      "how_it_works",
+      "portal_tour",
+      "key_documents",
+      "signoff",
+    ];
+    const stepIndex = STEP_ORDER.indexOf(step) + 1; // 1-based
+    if (stepIndex > 0) {
+      this.updateOnboardingStep(userId, stepIndex);
+    }
+
+    return record;
+  }
+
+  getOnboardingStatusForUser(userId: number): {
+    status: "not_started" | "in_progress" | "completed";
+    completedSteps: string[];
+    currentStep: string;
+  } {
+    const STEP_ORDER = [
+      "welcome",
+      "brand_profile",
+      "how_it_works",
+      "portal_tour",
+      "key_documents",
+      "signoff",
+    ];
+
+    const user = db.select().from(users).where(eq(users.id, userId)).get();
+    const status = (user?.onboardingStatus ?? "not_started") as
+      | "not_started"
+      | "in_progress"
+      | "completed";
+
+    const progressRows = db
+      .select()
+      .from(onboardingProgress)
+      .where(eq(onboardingProgress.userId, userId))
+      .all();
+
+    const completedSteps = progressRows.map((r) => r.step);
+
+    // currentStep = first step not yet in completedSteps
+    const currentStep =
+      STEP_ORDER.find((s) => !completedSteps.includes(s)) ?? "signoff";
+
+    return { status, completedSteps, currentStep };
   }
 
   // ===== ADMIN METHODS =====
@@ -1833,37 +1979,6 @@ function seedDemoData() {
 
 seedAdminAccounts();
 seedDemoData();
-
-function seedOnboardingData() {
-  // Mark Erin Okoye (demo user) as having completed onboarding
-  const demoUser = storage.getUserByEmail("demo@leaa.com");
-  if (!demoUser) return;
-
-  const existing = storage.getOnboardingByUserId(demoUser.id);
-  if (existing) return; // Already seeded
-
-  const now = new Date().toISOString();
-  db.insert(clientOnboarding).values({
-    userId: demoUser.id,
-    completedAt: now,
-    signatureText: "Erin Okoye",
-    signedAt: now,
-    step1Viewed: 1,
-    step2Viewed: 1,
-    step3Viewed: 1,
-    step4Viewed: 1,
-    step5Viewed: 1,
-    step6Completed: 1,
-  }).run();
-
-  // Set onboardingStatus to completed on users table
-  db.update(users)
-    .set({ onboardingStatus: "completed" })
-    .where(eq(users.id, demoUser.id))
-    .run();
-}
-
-seedOnboardingData();
 
 function seedPhaseAData() {
   // Check if already seeded

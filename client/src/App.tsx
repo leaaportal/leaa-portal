@@ -2,7 +2,6 @@ import { Switch, Route, Router, Redirect } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
@@ -19,7 +18,6 @@ import SourcingPage from "@/pages/sourcing";
 import DocumentsPage from "@/pages/documents";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/app-layout";
-import OnboardingPage from "@/pages/onboarding";
 
 // Admin pages
 import AdminDashboard from "@/pages/admin-dashboard";
@@ -36,45 +34,9 @@ import AdminApprovalsPage from "@/pages/admin-approvals";
 import AdminHoursPage from "@/pages/admin-hours";
 import AdminTasksPage from "@/pages/admin-tasks";
 import AdminNotificationsPage from "@/pages/admin-notifications";
+import ClientOnboarding from "@/pages/client-onboarding";
 
 function ClientApp() {
-  // Check if this client has completed onboarding
-  const { data: onboardingStatus, isLoading: onboardingLoading } = useQuery<any>({
-    queryKey: ["/api/onboarding/status"],
-    queryFn: async () => {
-      const res = await fetch("./api/onboarding/status");
-      if (!res.ok) return null;
-      return res.json();
-    },
-    staleTime: 60000,
-  });
-
-  if (onboardingLoading) {
-    return (
-      <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#F7F4EF" }}>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
-          <div style={{ width: 32, height: 32, border: "2px solid #D9C9B6", borderTopColor: "#B7542E", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
-          <p style={{ color: "#8A8C93", fontSize: 14, fontFamily: "Nunito, sans-serif" }}>Preparing your portal...</p>
-        </div>
-        <style>{"@keyframes spin { to { transform: rotate(360deg); } }"}</style>
-      </div>
-    );
-  }
-
-  // If onboarding not completed, redirect to /onboarding
-  const onboardingComplete = onboardingStatus && onboardingStatus.completedAt !== null;
-
-  if (!onboardingComplete) {
-    return (
-      <Switch>
-        <Route path="/onboarding" component={OnboardingPage} />
-        <Route>
-          <Redirect to="/onboarding" />
-        </Route>
-      </Switch>
-    );
-  }
-
   return (
     <AppLayout>
       <Switch>
@@ -88,9 +50,6 @@ function ClientApp() {
         <Route path="/support" component={SupportPage} />
         <Route path="/resources" component={ResourcesPage} />
         <Route path="/profile" component={ProfilePage} />
-        <Route path="/onboarding">
-          <Redirect to="/" />
-        </Route>
         {/* Redirect admin paths to client dashboard if client is logged in */}
         <Route path="/admin">
           <Redirect to="/" />
@@ -145,6 +104,11 @@ function AppContent() {
 
   if (!user) {
     return <LoginPage />;
+  }
+
+  // Onboarding guard for clients who haven't completed onboarding
+  if (user.role === "client" && user.onboardingStatus !== "completed") {
+    return <ClientOnboarding />;
   }
 
   if (user.role === "admin") {
