@@ -1496,5 +1496,109 @@ export async function registerRoutes(server: Server, app: Express) {
       nextSession,
     });
   });
-}
 
+  // ── CALENDAR EVENTS ───────────────────────────────────────────────────────
+
+  app.get("/api/calendar/events", requireAuth, (req, res) => {
+    try {
+      const userId = (req.session as any).userId;
+      const user = storage.getUserById(userId);
+      if (!user) return res.status(401).json({ message: "User not found" });
+      const isAdmin = user.role === "admin";
+
+      let monthStr: string;
+      const rawMonth = req.query.month as string | undefined;
+      if (rawMonth && /^\d{4}-\d{2}$/.test(rawMonth)) { monthStr = rawMonth; }
+      else { const now = new Date(); monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`; }
+
+      const [year, month] = monthStr.split("-").map(Number);
+      const monthStart = `${monthStr}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const monthEnd = `${monthStr}-${String(lastDay).padStart(2, "0")}`;
+
+      function toDateStr(raw: string | null | undefined): string | null {
+        if (!raw) return null;
+        const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+        return match ? match[1] : null;
+      }
+      function toTimeStr(raw: string | null | undefined): string | undefined {
+        if (!raw) return undefined;
+        try { const d = new Date(raw); if (isNaN(d.getTime())) return undefined; let h = d.getHours(); const m = d.getMinutes(); const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12; return `${h}:${String(m).padStart(2, "0")} ${ap}`; } catch { return undefined; }
+      }
+      function inMonth(ds: string | null): boolean { return ds ? ds >= monthStart && ds <= monthEnd : false; }
+
+      const events: any[] = [];
+      const uc: Record<number, any> = {};
+      function gui(uid: number | null | undefined) { if (!uid) return undefined; if (!uc[uid]) { const u = storage.getUserById(uid); uc[uid] = u ? { name: u.name, brandName: u.brandName } : undefined; } return uc[uid]; }
+
+      if (isAdmin) {
+        const allClients = storage.getAllClients();
+        for (const c of allClients) {
+          for (const p of storage.getProjectsByUserId(c.id)) {
+            for (const s of storage.getSessionsByProjectId(p.id)) { const ds = toDateStr(s.scheduledAt); if (inMonth(ds)) events.push({ id: `session-${s.id}`, type: "session", title: s.title, date: ds, time: toTimeStr(s.scheduledAt), clientName: c.name, brandName: c.brandName, status: s.status }); }
+            for (const d of storage.getDeliverablesByProjectId(p.id)) { if (!d.uploadedAt) continue; const ds = toDateStr(d.uploadedAt); if (inMonth(ds)) events.push({ id: `del-${d.id}`, type: "deliverable", title: d.title, date: ds, clientName: c.name, brandName: c.brandName, status: d.fileStatus ?? "draft" }); }
+          }
+        }
+        for (const t of storage.getAdminTasks()) { if (!t.dueDate) continue; const ds = toDateStr(t.dueDate); if (!inMonth(ds)) continue; const fl = t.category === "follow_up" || t.category === "onboarding"; let cn, bn; if (t.userId) { const i = gui(t.userId); cn = i?.name; bn = i?.brandName; } else if (t.projectId) { const pr = storage.getProjectById(t.projectId); if (pr) { const i = gui(pr.userId); cn = i?.name; bn = i?.brandName; } } events.push({ id: `task-${t.id}`, type: fl ? "lead_followup" : "task", title: t.title, date: ds, clientName: cn, brandName: bn, status: t.status, priority: t.priority }); }
+      } else {
+        const ups = storage.getProjectsByUserId(userId); if (!ups.length) return res.json({ events: [], month: monthStr }); const p = ups[0];
+        for (const s of storage.getSessionsByProjectId(p.id)) { const ds = toDateStr(s.scheduledAt); if (inMonth(ds)) events.push({ id: `session-${s.id}`, type: "session", title: s.title, date: ds, time: toTimeStr(s.scheduledAt), status: s.status }); }
+        for (const d of storage.getDeliverablesByProjectId(p.id)) { if (!d.uploadedAt) continue; const ds = toDateStr(d.uploadedAt); if (inMonth(ds)) events.push({ id: `del-${d.id}`, type: "deliverable", title: d.title, date: ds, status: d.fileStatus ?? "draft" }); }
+        for (const t of storage.getAdminTasks({ clientId: userId })) { if (!t.dueDate) continue; const ds = toDateStr(t.dueDate); if (!inMonth(ds)) continue; const fl = t.category === "follow_up" || t.category === "onboarding"; events.push({ id: `task-${t.id}`, type: fl ? "lead_followup" : "task", title: t.title, date: ds, status: t.status, priority: t.priority }); }
+      }
+      events.sort((a, b) => a.date.localeCompare(b.date));
+      return res.json({ events, month: monthStr });
+    } catch (e: any) { return res.status(500).json({ message: e.message || "Server error" }); }
+  });
+
+  // ── PROJECT TRACKER ─────────────────────────────────────────────────────
+
+  app.get("/api/projects/:id/tracker", requireAuth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const project = storage.getProjectById(projectId);
+    if (!project) return res.status(404).json({ message: "Project not found" });
+    const userId = (req.session as any).userId;
+    const userObj = storage.getUserById(userId);
+    if (!userObj) return res.status(401).json({ message: "User not found" });
+    if (userObj.role !== "admin") { const up = storage.getProjectsByUserId(userId); if (!up.find(p => p.id === projectId)) return res.status(403).json({ message: "Forbidden" }); }
+
+    const ms = storage.getMilestonesByProjectId(projectId);
+    const enriched = ms.map(m => ({ ...m, subMilestones: storage.getSubMilestonesByMilestoneId(m.id), deliverables: storage.getDeliverablesByMilestoneId(m.id) }));
+    const today = new Date();
+    const startDate = project.startDate ? new Date(project.startDate) : today;
+    const endDate = project.endDate ? new Date(project.endDate) : null;
+    const D = 86400000;
+    const totalDays = endDate ? Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / D)) : 60;
+    const daysElapsed = Math.max(0, Math.round((today.getTime() - startDate.getTime()) / D));
+    const daysRemaining = Math.max(0, totalDays - daysElapsed);
+    const percentElapsed = Math.min(100, Math.round((daysElapsed / totalDays) * 100));
+
+    let totalSubs = 0, completedSubs = 0, delReady = 0, delTotal = 0, pendApp = 0;
+    enriched.forEach(m => { totalSubs += m.subMilestones.length; completedSubs += m.subMilestones.filter(s => s.status === "completed").length; delTotal += m.deliverables.length; delReady += m.deliverables.filter(d => d.fileUrl).length; });
+    const overallPercent = totalSubs > 0 ? Math.round((completedSubs / totalSubs) * 100) : 0;
+    try { pendApp = storage.getApprovalsByProjectId(projectId).filter((a: any) => a.status === "pending").length; } catch { pendApp = 0; }
+
+    const cur = enriched.find(m => m.status === "in_progress");
+    const ppd = Math.round(totalDays / Math.max(1, enriched.length));
+    const phases = enriched.map(m => {
+      let da: number | null = null;
+      if (m.status === "completed" && m.startedAt && m.completedAt) da = Math.max(1, Math.round((new Date(m.completedAt).getTime() - new Date(m.startedAt).getTime()) / D));
+      else if (m.status === "in_progress" && m.startedAt) da = Math.max(1, Math.round((today.getTime() - new Date(m.startedAt).getTime()) / D));
+      return { name: m.title, status: m.status, startedAt: m.startedAt ?? null, completedAt: m.completedAt ?? null, daysPlanned: ppd, daysActual: da };
+    });
+    const delays = phases.filter(p => p.daysActual !== null && p.daysActual > p.daysPlanned * 1.25).map(p => ({ phase: p.name, plannedDays: p.daysPlanned, actualDays: p.daysActual as number, delayDays: (p.daysActual as number) - p.daysPlanned, reason: p.status === "in_progress" ? "In progress — exceeding planned window" : "Completed late" }));
+
+    let est: string | null = null;
+    if (overallPercent > 0 && overallPercent < 100) { est = new Date(startDate.getTime() + Math.round((daysElapsed / overallPercent) * 100) * D).toISOString().split("T")[0]; }
+    else if (overallPercent === 100) est = today.toISOString().split("T")[0];
+    else if (endDate) est = project.endDate ?? null;
+
+    return res.json({
+      project: { name: project.name, serviceType: project.serviceType, startDate: project.startDate, endDate: project.endDate ?? null, status: project.status },
+      timeline: { totalDays, daysElapsed, daysRemaining, percentElapsed, isOverdue: daysElapsed > totalDays, estimatedCompletion: est },
+      progress: { overallPercent, sessionsCompleted: enriched.filter(m => m.status === "completed").length, sessionsTotal: enriched.length, currentSession: cur?.title ?? null, milestonesCompleted: enriched.filter(m => m.status === "completed").length, milestonesTotal: enriched.length, deliverablesReady: delReady, deliverablesTotal: delTotal, pendingApprovals: pendApp, pendingDocuments: 0 },
+      phases, delays,
+    });
+  });
+
+}

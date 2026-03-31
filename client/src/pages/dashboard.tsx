@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { format, parseISO } from "date-fns";
+import { DashboardCalendar } from "@/components/dashboard-calendar";
 
 interface SessionSchedule {
   id: number;
@@ -349,48 +350,10 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Session Overview + Recent Messages */}
+      {/* Calendar + Recent Messages */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Session Overview */}
-        <Card className="border-border/50 shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="font-display text-lg">Session Overview</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {data.milestones.map((m) => (
-                <div
-                  key={m.id}
-                  className="flex items-center gap-3 p-3 rounded-lg bg-muted/30 border border-border/30"
-                  data-testid={`card-session-${m.sessionNumber}`}
-                >
-                  <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
-                    m.status === "completed"
-                      ? "bg-green-100 dark:bg-green-900/30"
-                      : m.status === "in_progress"
-                      ? "bg-primary/10"
-                      : "bg-muted"
-                  }`}>
-                    <span className={`text-sm font-bold ${
-                      m.status === "completed"
-                        ? "text-green-700 dark:text-green-400"
-                        : m.status === "in_progress"
-                        ? "text-primary"
-                        : "text-muted-foreground"
-                    }`}>
-                      {m.sessionNumber}
-                    </span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{m.title}</p>
-                    <p className="text-xs text-muted-foreground">{m.hours}hrs · ${m.cost}</p>
-                  </div>
-                  <StatusBadge status={m.status} />
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+        {/* Calendar */}
+        <DashboardCalendar isAdmin={false} />
 
         {/* Recent Messages */}
         <Card className="border-border/50 shadow-sm">

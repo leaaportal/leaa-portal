@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
+import ProjectTracker from "@/components/project-tracker";
 
 interface MilestoneData {
   id: number;
@@ -300,6 +301,9 @@ export default function MilestonesPage() {
           60-Day Intensive · {totalHours} Hours · ${totalCost.toLocaleString()} Total
         </p>
       </div>
+
+      {/* Project Tracker Dashboard */}
+      {projectId && <ProjectTracker projectId={projectId} />}
 
       {/* Overall progress */}
       <Card className="border-primary/20 bg-gradient-to-r from-card to-primary/5 shadow-sm">
