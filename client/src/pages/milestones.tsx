@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
+import ProjectTracker from "@/components/project-tracker";
 
 interface MilestoneData {
   id: number;
@@ -301,39 +302,8 @@ export default function MilestonesPage() {
         </p>
       </div>
 
-      {/* Overall progress */}
-      <Card className="border-primary/20 bg-gradient-to-r from-card to-primary/5 shadow-sm">
-        <CardContent className="p-5">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <p className="text-sm font-medium text-foreground">Overall Progress</p>
-              <p className="text-xs text-muted-foreground">{completedSubs} of {totalSubs} total checkpoints completed</p>
-            </div>
-            <span className="text-3xl font-bold text-primary" data-testid="text-milestone-progress">
-              {overallProgress}%
-            </span>
-          </div>
-          <Progress value={overallProgress} className="h-3" />
-
-          {/* Mini session indicators */}
-          <div className="flex items-center gap-2 mt-4">
-            {milestones.map((m) => (
-              <div key={m.id} className="flex-1">
-                <div
-                  className={`h-1.5 rounded-full ${
-                    m.status === "completed"
-                      ? "bg-green-500"
-                      : m.status === "in_progress"
-                      ? "bg-primary"
-                      : "bg-muted"
-                  }`}
-                />
-                <p className="text-xs text-muted-foreground mt-1 text-center">S{m.sessionNumber}</p>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      {/* Project Tracker Dashboard */}
+      {projectId && <ProjectTracker projectId={projectId} />}
 
       {/* Timeline connector + Cards */}
       <div className="relative">
@@ -349,3 +319,4 @@ export default function MilestonesPage() {
     </div>
   );
 }
+

@@ -8,7 +8,6 @@ interface User {
   name: string;
   brandName: string;
   role: string;
-  onboardingStatus: "not_started" | "in_progress" | "completed";
 }
 
 interface AuthContextType {

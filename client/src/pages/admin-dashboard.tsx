@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { formatDistanceToNow, isPast } from "date-fns";
 import { Link } from "wouter";
+import { DashboardCalendar } from "@/components/dashboard-calendar";
 
 function ActionCard({
   title,
@@ -243,6 +244,9 @@ export default function AdminDashboard() {
           />
         </div>
       </div>
+
+      {/* Calendar */}
+      <DashboardCalendar isAdmin={true} />
 
       {/* Row 3: Today's Tasks */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

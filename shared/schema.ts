@@ -9,9 +9,6 @@ export const users = sqliteTable("users", {
   brandName: text("brand_name").notNull(),
   accessCode: text("access_code").notNull(),
   role: text("role", { enum: ["client", "admin"] }).notNull().default("client"),
-  onboardingStatus: text("onboarding_status", {
-    enum: ["not_started", "in_progress", "completed"],
-  }).notNull().default("not_started"),
 });
 
 export const projects = sqliteTable("projects", {
@@ -335,34 +332,6 @@ export const clientOnboarding = sqliteTable("client_onboarding", {
 export const insertClientOnboardingSchema = createInsertSchema(clientOnboarding).omit({ id: true });
 export type ClientOnboarding = typeof clientOnboarding.$inferSelect;
 export type InsertClientOnboarding = z.infer<typeof insertClientOnboardingSchema>;
-
-export const onboardingProgress = sqliteTable("onboarding_progress", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  userId: integer("user_id").notNull(),
-  step: text("step").notNull(),
-  completedAt: text("completed_at").notNull(),
-  data: text("data"),
-});
-
-export const ONBOARDING_STEPS = [
-  "welcome",
-  "brand_profile",
-  "how_it_works",
-  "portal_tour",
-  "key_documents",
-  "signoff",
-] as const;
-
-export type OnboardingStep = typeof ONBOARDING_STEPS[number];
-
-export const insertOnboardingProgressSchema = createInsertSchema(
-  onboardingProgress
-).omit({ id: true });
-
-export type OnboardingProgress = typeof onboardingProgress.$inferSelect;
-export type InsertOnboardingProgress = z.infer<
-  typeof insertOnboardingProgressSchema
->;
 
 // ===== PHASE A: Admin Operations =====
 
