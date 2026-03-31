@@ -1,4 +1,4 @@
-import { Switch, Route, Router } from "wouter";
+import { Switch, Route, Router, Redirect } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -16,7 +16,16 @@ import ProfilePage from "@/pages/profile";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/app-layout";
 
-function AuthenticatedApp() {
+// Admin pages
+import AdminDashboard from "@/pages/admin-dashboard";
+import AdminClients from "@/pages/admin-clients";
+import AdminClientDetail from "@/pages/admin-client-detail";
+import AdminProjects from "@/pages/admin-projects";
+import AdminTickets from "@/pages/admin-tickets";
+import AdminMessages from "@/pages/admin-messages";
+import AdminDeliverables from "@/pages/admin-deliverables";
+
+function ClientApp() {
   return (
     <AppLayout>
       <Switch>
@@ -27,6 +36,31 @@ function AuthenticatedApp() {
         <Route path="/support" component={SupportPage} />
         <Route path="/resources" component={ResourcesPage} />
         <Route path="/profile" component={ProfilePage} />
+        {/* Redirect admin paths to client dashboard if client is logged in */}
+        <Route path="/admin">
+          <Redirect to="/" />
+        </Route>
+        <Route component={NotFound} />
+      </Switch>
+    </AppLayout>
+  );
+}
+
+function AdminApp() {
+  return (
+    <AppLayout>
+      <Switch>
+        <Route path="/admin" component={AdminDashboard} />
+        <Route path="/admin/clients" component={AdminClients} />
+        <Route path="/admin/clients/:id" component={AdminClientDetail} />
+        <Route path="/admin/projects" component={AdminProjects} />
+        <Route path="/admin/tickets" component={AdminTickets} />
+        <Route path="/admin/messages" component={AdminMessages} />
+        <Route path="/admin/deliverables" component={AdminDeliverables} />
+        {/* Redirect root to admin dashboard */}
+        <Route path="/">
+          <Redirect to="/admin" />
+        </Route>
         <Route component={NotFound} />
       </Switch>
     </AppLayout>
@@ -51,7 +85,11 @@ function AppContent() {
     return <LoginPage />;
   }
 
-  return <AuthenticatedApp />;
+  if (user.role === "admin") {
+    return <AdminApp />;
+  }
+
+  return <ClientApp />;
 }
 
 export default function App() {
@@ -68,3 +106,4 @@ export default function App() {
     </QueryClientProvider>
   );
 }
+

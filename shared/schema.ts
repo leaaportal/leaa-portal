@@ -177,3 +177,4 @@ export type Payment = typeof payments.$inferSelect;
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type SessionSchedule = typeof sessions.$inferSelect;
 export type InsertSessionSchedule = z.infer<typeof insertSessionSchema>;
+

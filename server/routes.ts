@@ -27,6 +27,18 @@ export async function registerRoutes(server: Server, app: Express) {
     next();
   }
 
+  // Admin auth middleware
+  function requireAdmin(req: any, res: any, next: any) {
+    if (!req.session?.userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+    const user = storage.getUserById(req.session.userId);
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ message: "Admin access required" });
+    }
+    next();
+  }
+
   // Login
   app.post("/api/auth/login", (req, res) => {
     try {
@@ -252,6 +264,255 @@ export async function registerRoutes(server: Server, app: Express) {
     return res.json(sess);
   });
 
+  // ===== ADMIN ROUTES =====
+
+  // Admin dashboard stats
+  app.get("/api/admin/dashboard", requireAdmin, (req, res) => {
+    try {
+      const stats = storage.getAdminDashboardStats();
+      return res.json(stats);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Get all clients
+  app.get("/api/admin/clients", requireAdmin, (req, res) => {
+    try {
+      const clients = storage.getAllClients();
+      // Enrich with project data
+      const enriched = clients.map((client) => {
+        const clientProjects = storage.getProjectsByUserId(client.id);
+        const project = clientProjects[0] || null;
+        let overallProgress = 0;
+        if (project) {
+          const ms = storage.getMilestonesByProjectId(project.id);
+          let totalSubs = 0;
+          let completedSubs = 0;
+          ms.forEach((m) => {
+            const subs = storage.getSubMilestonesByMilestoneId(m.id);
+            totalSubs += subs.length;
+            completedSubs += subs.filter((s) => s.status === "completed").length;
+          });
+          overallProgress = totalSubs > 0 ? Math.round((completedSubs / totalSubs) * 100) : 0;
+        }
+        const { accessCode: _, ...safeClient } = client;
+        return { ...safeClient, project, overallProgress };
+      });
+      return res.json(enriched);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Create new client with project and milestones
+  app.post("/api/admin/clients", requireAdmin, (req, res) => {
+    try {
+      const { name, email, brandName, accessCode, serviceType, startDate } = req.body;
+      if (!name || !email || !brandName || !accessCode || !serviceType || !startDate) {
+        return res.status(400).json({ message: "All fields are required" });
+      }
+      const result = storage.createClientWithProject({ name, email, brandName, accessCode, serviceType, startDate });
+      return res.json(result);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Get single client detail
+  app.get("/api/admin/clients/:id", requireAdmin, (req, res) => {
+    try {
+      const detail = storage.getClientDetail(parseInt(req.params.id));
+      const { accessCode: _, ...safeUser } = detail.user;
+      return res.json({ ...detail, user: safeUser });
+    } catch (e: any) {
+      return res.status(404).json({ message: e.message });
+    }
+  });
+
+  // Update milestone status
+  app.patch("/api/admin/milestones/:id", requireAdmin, (req, res) => {
+    try {
+      const { status, notes } = req.body;
+      storage.updateMilestoneStatus(parseInt(req.params.id), status, notes);
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Toggle sub-milestone status
+  app.patch("/api/admin/sub-milestones/:id", requireAdmin, (req, res) => {
+    try {
+      const { status } = req.body;
+      storage.updateSubMilestoneStatus(parseInt(req.params.id), status);
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Get all tickets
+  app.get("/api/admin/tickets", requireAdmin, (req, res) => {
+    try {
+      const { status } = req.query;
+      const tickets = storage.getAllTickets(status as string | undefined);
+      return res.json(tickets);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Update ticket status
+  app.patch("/api/admin/tickets/:id", requireAdmin, (req, res) => {
+    try {
+      const { status } = req.body;
+      storage.updateTicketStatus(parseInt(req.params.id), status);
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Reply to ticket as admin
+  app.post("/api/admin/tickets/:id/reply", requireAdmin, (req, res) => {
+    try {
+      const ticketId = parseInt(req.params.id);
+      const adminUserId = (req.session as any).userId;
+      const adminUser = storage.getUserById(adminUserId);
+      if (!adminUser) return res.status(401).json({ message: "User not found" });
+
+      const { content, senderName } = req.body;
+      if (!content) return res.status(400).json({ message: "Content is required" });
+
+      const reply = storage.createTicketReply({
+        ticketId,
+        senderName: senderName || adminUser.name,
+        senderRole: "admin",
+        content: content.trim(),
+        createdAt: new Date().toISOString(),
+      });
+
+      // Update ticket status to in_progress if it was open
+      const ticket = storage.getTicketById(ticketId);
+      if (ticket && ticket.status === "open") {
+        storage.updateTicketStatus(ticketId, "in_progress");
+      }
+
+      return res.json(reply);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Get all messages grouped by project
+  app.get("/api/admin/messages", requireAdmin, (req, res) => {
+    try {
+      const msgs = storage.getAllMessages();
+      return res.json(msgs);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Send message to client project as admin
+  app.post("/api/admin/messages", requireAdmin, (req, res) => {
+    try {
+      const adminUserId = (req.session as any).userId;
+      const adminUser = storage.getUserById(adminUserId);
+      if (!adminUser) return res.status(401).json({ message: "User not found" });
+
+      const { projectId, content, senderName } = req.body;
+      if (!projectId || !content) {
+        return res.status(400).json({ message: "projectId and content are required" });
+      }
+
+      const msg = storage.createMessage({
+        projectId: parseInt(projectId),
+        senderName: senderName || adminUser.name,
+        senderRole: "admin",
+        content: content.trim(),
+        createdAt: new Date().toISOString(),
+        isRead: 0,
+      });
+
+      return res.json(msg);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Get all deliverables grouped by client
+  app.get("/api/admin/deliverables", requireAdmin, (req, res) => {
+    try {
+      const clients = storage.getAllClients();
+      const result = clients.map((client) => {
+        const clientProjects = storage.getProjectsByUserId(client.id);
+        const project = clientProjects[0] || null;
+        const delivs = project ? storage.getDeliverablesByProjectId(project.id) : [];
+        const { accessCode: _, ...safeClient } = client;
+        return { client: safeClient, project, deliverables: delivs };
+      });
+      return res.json(result);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Create deliverable
+  app.post("/api/admin/deliverables", requireAdmin, (req, res) => {
+    try {
+      const { milestoneId, title, fileUrl, fileStatus, version } = req.body;
+      if (!milestoneId || !title) {
+        return res.status(400).json({ message: "milestoneId and title are required" });
+      }
+      const deliv = storage.createDeliverable({ milestoneId: parseInt(milestoneId), title, fileUrl, fileStatus, version });
+      return res.json(deliv);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Update deliverable
+  app.patch("/api/admin/deliverables/:id", requireAdmin, (req, res) => {
+    try {
+      const { title, fileUrl, fileStatus, version } = req.body;
+      storage.updateDeliverable(parseInt(req.params.id), { title, fileUrl, fileStatus, version });
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Get all projects (admin)
+  app.get("/api/admin/projects", requireAdmin, (req, res) => {
+    try {
+      const clients = storage.getAllClients();
+      const result = clients.map((client) => {
+        const clientProjects = storage.getProjectsByUserId(client.id);
+        const project = clientProjects[0] || null;
+        if (!project) return null;
+        const ms = storage.getMilestonesByProjectId(project.id);
+        let totalSubs = 0;
+        let completedSubs = 0;
+        const enrichedMs = ms.map((m) => {
+          const subs = storage.getSubMilestonesByMilestoneId(m.id);
+          totalSubs += subs.length;
+          completedSubs += subs.filter((s) => s.status === "completed").length;
+          return { ...m, subMilestones: subs };
+        });
+        const overallProgress = totalSubs > 0 ? Math.round((completedSubs / totalSubs) * 100) : 0;
+        const { accessCode: _, ...safeClient } = client;
+        return { client: safeClient, project, milestones: enrichedMs, overallProgress };
+      }).filter(Boolean);
+      return res.json(result);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ===== END ADMIN ROUTES =====
+
   // Dashboard summary (enhanced)
   app.get("/api/dashboard", requireAuth, (req, res) => {
     const userId = (req.session as any).userId;
@@ -318,3 +579,4 @@ export async function registerRoutes(server: Server, app: Express) {
     });
   });
 }
+

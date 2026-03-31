@@ -1,6 +1,6 @@
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, sum, count, ne } from "drizzle-orm";
 import {
   users, projects, milestones, subMilestones, deliverables, messages,
   supportTickets, ticketReplies, resources, notifications, payments, sessions,
@@ -66,6 +66,47 @@ export interface IStorage {
 
   // Sessions
   getSessionsByProjectId(projectId: number): SessionSchedule[];
+
+  // ===== ADMIN METHODS =====
+  getAllClients(): User[];
+  createClientWithProject(data: {
+    name: string;
+    email: string;
+    brandName: string;
+    accessCode: string;
+    serviceType: string;
+    startDate: string;
+  }): { user: User; project: Project };
+  getClientDetail(userId: number): {
+    user: User;
+    project: Project | null;
+    milestones: any[];
+    deliverables: any[];
+  };
+  updateMilestoneStatus(id: number, status: string, notes?: string): void;
+  updateSubMilestoneStatus(id: number, status: string): void;
+  getAllTickets(status?: string): any[];
+  getAllMessages(): any[];
+  createDeliverable(data: {
+    milestoneId: number;
+    title: string;
+    fileUrl?: string;
+    fileStatus?: string;
+    version?: number;
+  }): Deliverable;
+  updateDeliverable(id: number, data: Partial<{
+    title: string;
+    fileUrl: string;
+    fileStatus: string;
+    version: number;
+  }>): void;
+  getAdminDashboardStats(): {
+    totalActiveClients: number;
+    openTickets: number;
+    projectsInProgress: number;
+    totalRevenue: number;
+    recentActivity: any[];
+  };
 }
 
 const sqlite = new Database("leaa.db");
@@ -309,9 +350,340 @@ export class DatabaseStorage implements IStorage {
   getSessionsByProjectId(projectId: number): SessionSchedule[] {
     return db.select().from(sessions).where(eq(sessions.projectId, projectId)).orderBy(sessions.scheduledAt).all();
   }
+
+  // ===== ADMIN METHODS =====
+
+  getAllClients(): User[] {
+    return db.select().from(users).where(eq(users.role, "client")).all();
+  }
+
+  createClientWithProject(data: {
+    name: string;
+    email: string;
+    brandName: string;
+    accessCode: string;
+    serviceType: string;
+    startDate: string;
+  }): { user: User; project: Project } {
+    const user = db.insert(users).values({
+      name: data.name,
+      email: data.email.toLowerCase(),
+      brandName: data.brandName,
+      accessCode: data.accessCode,
+      role: "client",
+    }).returning().get();
+
+    const project = db.insert(projects).values({
+      userId: user.id,
+      name: `${data.brandName} — ${data.serviceType}`,
+      serviceType: data.serviceType,
+      status: "active",
+      startDate: data.startDate,
+    }).returning().get();
+
+    // Auto-populate milestones based on service type
+    const isConceptDev = data.serviceType.toLowerCase().includes("concept");
+    const isRetainer5 = data.serviceType.includes("5hr") || data.serviceType.includes("5 hr");
+    const isRetainer10 = data.serviceType.includes("10hr") || data.serviceType.includes("10 hr");
+    const isRetainer20 = data.serviceType.includes("20hr") || data.serviceType.includes("20 hr");
+
+    if (isConceptDev) {
+      // 4 Concept Dev sessions
+      const conceptSessions = [
+        {
+          sessionNumber: 1,
+          title: "Understanding the Vision",
+          description: "Consultation & planning phase — deep dive into your brand story, target market, and creative vision for the collection.",
+          hours: 6,
+          cost: 450,
+          subs: [
+            "Initial brand consultation call",
+            "Market research & competitor scan",
+            "Brand brief document creation",
+            "Mood board framework development",
+            "Vision alignment review",
+            "Session 1 wrap-up & handoff",
+          ],
+        },
+        {
+          sessionNumber: 2,
+          title: "Customer Profile Development",
+          description: "Deep customer research and persona building — sessions diving into your ideal customer, market positioning, and competitive landscape.",
+          hours: 16,
+          cost: 1200,
+          subs: [
+            "Week 1: Customer Demographics Deep Dive",
+            "Week 2: Psychographic Profiling",
+            "Week 3: Shopping Behavior Analysis",
+            "Week 4: Competitive Landscape Mapping",
+            "Week 5: Customer Journey Mapping",
+            "Week 6: Persona Development Workshop",
+            "Week 7: Market Positioning Strategy",
+            "Week 8: Final Persona Presentation",
+          ],
+        },
+        {
+          sessionNumber: 3,
+          title: "Design & Fabric Selection",
+          description: "Feedback & refinement phase — translating research into tangible design decisions, fabric choices, and color palette finalization.",
+          hours: 8,
+          cost: 600,
+          subs: [
+            "Design direction refinement",
+            "Fabric sourcing & swatching",
+            "Color palette finalization",
+            "Silhouette development",
+            "Design review session",
+            "Final fabric & design sign-off",
+          ],
+        },
+        {
+          sessionNumber: 4,
+          title: "Design Development",
+          description: "Final presentation & documentation — comprehensive tech packs, final design presentation, and LEAA Client Pathway proposal.",
+          hours: 6,
+          cost: 450,
+          subs: [
+            "Tech pack development",
+            "Final design compilation",
+            "Production specifications",
+            "Cost sheet preparation",
+            "Final presentation creation",
+            "LEAA Client Pathway proposal",
+          ],
+        },
+      ];
+
+      for (const sess of conceptSessions) {
+        const m = db.insert(milestones).values({
+          projectId: project.id,
+          sessionNumber: sess.sessionNumber,
+          title: sess.title,
+          description: sess.description,
+          hours: sess.hours,
+          cost: sess.cost,
+          status: "not_started",
+        }).returning().get();
+
+        sess.subs.forEach((title, i) => {
+          db.insert(subMilestones).values({
+            milestoneId: m.id,
+            title,
+            status: "pending",
+            order: i + 1,
+          }).run();
+        });
+      }
+    } else {
+      // Monthly retainer milestones
+      const hours = isRetainer20 ? 20 : isRetainer10 ? 10 : 5;
+      const cost = isRetainer20 ? 1200 : isRetainer10 ? 700 : 400;
+      const retainerSubs = [
+        "Session planning & agenda",
+        "Research & preparation",
+        "Active session work",
+        "Deliverable creation",
+        "Review & revisions",
+        "Month-end summary",
+      ];
+
+      for (let month = 1; month <= 3; month++) {
+        const m = db.insert(milestones).values({
+          projectId: project.id,
+          sessionNumber: month,
+          title: `Month ${month} Retainer`,
+          description: `Monthly retainer work — ${hours} hours of dedicated brand development and design services.`,
+          hours,
+          cost,
+          status: "not_started",
+        }).returning().get();
+
+        retainerSubs.forEach((title, i) => {
+          db.insert(subMilestones).values({
+            milestoneId: m.id,
+            title,
+            status: "pending",
+            order: i + 1,
+          }).run();
+        });
+      }
+    }
+
+    return { user, project };
+  }
+
+  getClientDetail(userId: number): {
+    user: User;
+    project: Project | null;
+    milestones: any[];
+    deliverables: any[];
+  } {
+    const user = db.select().from(users).where(eq(users.id, userId)).get();
+    if (!user) throw new Error("User not found");
+
+    const userProjects = db.select().from(projects).where(eq(projects.userId, userId)).all();
+    const project = userProjects[0] || null;
+
+    if (!project) return { user, project: null, milestones: [], deliverables: [] };
+
+    const ms = db.select().from(milestones).where(eq(milestones.projectId, project.id)).all();
+    const enrichedMs = ms.map((m) => ({
+      ...m,
+      subMilestones: db.select().from(subMilestones).where(eq(subMilestones.milestoneId, m.id)).all(),
+      deliverables: db.select().from(deliverables).where(eq(deliverables.milestoneId, m.id)).all(),
+    }));
+
+    const allDeliverables: any[] = [];
+    for (const m of enrichedMs) {
+      allDeliverables.push(...m.deliverables.map((d: any) => ({ ...d, milestoneTitle: m.title })));
+    }
+
+    return { user, project, milestones: enrichedMs, deliverables: allDeliverables };
+  }
+
+  updateMilestoneStatus(id: number, status: string, notes?: string): void {
+    const updateData: any = { status: status as any };
+    if (status === "in_progress" && !updateData.startedAt) {
+      updateData.startedAt = new Date().toISOString();
+    }
+    if (status === "completed") {
+      updateData.completedAt = new Date().toISOString();
+    }
+    db.update(milestones).set(updateData).where(eq(milestones.id, id)).run();
+  }
+
+  updateSubMilestoneStatus(id: number, status: string): void {
+    db.update(subMilestones).set({ status: status as any }).where(eq(subMilestones.id, id)).run();
+  }
+
+  getAllTickets(status?: string): any[] {
+    const allTickets = db.select().from(supportTickets).orderBy(desc(supportTickets.createdAt)).all();
+    const filtered = status && status !== "all" ? allTickets.filter((t) => t.status === status) : allTickets;
+
+    return filtered.map((ticket) => {
+      const user = db.select().from(users).where(eq(users.id, ticket.userId)).get();
+      const replies = db.select().from(ticketReplies).where(eq(ticketReplies.ticketId, ticket.id)).all();
+      return { ...ticket, user, replies };
+    });
+  }
+
+  getAllMessages(): any[] {
+    const allProjects = db.select().from(projects).all();
+    return allProjects.map((project) => {
+      const user = db.select().from(users).where(eq(users.id, project.userId)).get();
+      const msgs = db.select().from(messages).where(eq(messages.projectId, project.id)).orderBy(desc(messages.createdAt)).all();
+      return { project, user, messages: msgs, lastMessage: msgs[0] || null };
+    }).filter((p) => p.user && p.user.role === "client");
+  }
+
+  createDeliverable(data: {
+    milestoneId: number;
+    title: string;
+    fileUrl?: string;
+    fileStatus?: string;
+    version?: number;
+  }): Deliverable {
+    return db.insert(deliverables).values({
+      milestoneId: data.milestoneId,
+      title: data.title,
+      fileUrl: data.fileUrl || null,
+      uploadedAt: new Date().toISOString(),
+      fileStatus: (data.fileStatus || "draft") as any,
+      version: data.version || 1,
+    }).returning().get();
+  }
+
+  updateDeliverable(id: number, data: Partial<{
+    title: string;
+    fileUrl: string;
+    fileStatus: string;
+    version: number;
+  }>): void {
+    db.update(deliverables).set(data as any).where(eq(deliverables.id, id)).run();
+  }
+
+  getAdminDashboardStats(): {
+    totalActiveClients: number;
+    openTickets: number;
+    projectsInProgress: number;
+    totalRevenue: number;
+    recentActivity: any[];
+  } {
+    const allClients = db.select().from(users).where(eq(users.role, "client")).all();
+    const totalActiveClients = allClients.length;
+
+    const allTickets = db.select().from(supportTickets).all();
+    const openTickets = allTickets.filter((t) => t.status === "open" || t.status === "in_progress").length;
+
+    const allProjects = db.select().from(projects).all();
+    const projectsInProgress = allProjects.filter((p) => p.status === "active").length;
+
+    const allPayments = db.select().from(payments).all();
+    const totalRevenue = allPayments
+      .filter((p) => p.status === "paid")
+      .reduce((sum, p) => sum + p.amount, 0);
+
+    // Recent activity: tickets + messages
+    const recentTickets = db.select().from(supportTickets).orderBy(desc(supportTickets.createdAt)).all().slice(0, 5);
+    const recentMessages = db.select().from(messages).orderBy(desc(messages.createdAt)).all().slice(0, 5);
+
+    const recentActivity = [
+      ...recentTickets.map((t) => {
+        const u = db.select().from(users).where(eq(users.id, t.userId)).get();
+        return {
+          type: "ticket",
+          id: t.id,
+          subject: t.subject,
+          status: t.status,
+          createdAt: t.createdAt,
+          userName: u?.name || "Unknown",
+        };
+      }),
+      ...recentMessages.map((m) => {
+        const proj = db.select().from(projects).where(eq(projects.id, m.projectId)).get();
+        const u = proj ? db.select().from(users).where(eq(users.id, proj.userId)).get() : null;
+        return {
+          type: "message",
+          id: m.id,
+          content: m.content.slice(0, 80),
+          senderName: m.senderName,
+          senderRole: m.senderRole,
+          createdAt: m.createdAt,
+          clientName: u?.name || "Unknown",
+        };
+      }),
+    ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 10);
+
+    return { totalActiveClients, openTickets, projectsInProgress, totalRevenue, recentActivity };
+  }
 }
 
 export const storage = new DatabaseStorage();
+
+// Seed admin accounts
+function seedAdminAccounts() {
+  const brandonExists = storage.getUserByEmail("brandon@theleaagency.com");
+  if (!brandonExists) {
+    storage.createUser({
+      email: "brandon@theleaagency.com",
+      name: "Brandon Ellis",
+      brandName: "LEAA Admin",
+      accessCode: "ADMIN2026",
+      role: "admin",
+    });
+  }
+
+  const daleExists = storage.getUserByEmail("dale@theleaagency.com");
+  if (!daleExists) {
+    storage.createUser({
+      email: "dale@theleaagency.com",
+      name: "Dale Lane",
+      brandName: "LEAA Admin",
+      accessCode: "ADMIN2026",
+      role: "admin",
+    });
+  }
+}
 
 // Seed demo data
 function seedDemoData() {
@@ -700,4 +1072,6 @@ function seedDemoData() {
   });
 }
 
+seedAdminAccounts();
 seedDemoData();
+
