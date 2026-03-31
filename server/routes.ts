@@ -75,6 +75,111 @@ export async function registerRoutes(server: Server, app: Express) {
     return res.json({ user: safeUser });
   });
 
+  // ── ONBOARDING ──────────────────────────────────────────────────────────────
+
+  // GET /api/onboarding/status
+  app.get("/api/onboarding/status", requireAuth, (req, res) => {
+    try {
+      const userId = (req.session as any).userId as number;
+      const statusData = storage.getOnboardingStatusForUser(userId);
+      return res.json(statusData);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message || "Server error" });
+    }
+  });
+
+  // POST /api/onboarding/complete-step
+  app.post("/api/onboarding/complete-step", requireAuth, (req, res) => {
+    try {
+      const userId = (req.session as any).userId as number;
+      const VALID_STEPS = [
+        "welcome",
+        "brand_profile",
+        "how_it_works",
+        "portal_tour",
+        "key_documents",
+        "signoff",
+      ];
+
+      const { step, data } = req.body as { step: string; data?: string };
+
+      if (!step || !VALID_STEPS.includes(step)) {
+        return res.status(400).json({
+          message: `Invalid step. Must be one of: ${VALID_STEPS.join(", ")}`,
+        });
+      }
+
+      // Ensure the onboarding record exists (create if first time)
+      const existing = storage.getOnboardingByUserId(userId);
+      if (!existing) {
+        storage.createOnboarding({
+          userId,
+          completedAt: null,
+          signatureText: null,
+          signedAt: null,
+          step1Viewed: 0,
+          step2Viewed: 0,
+          step3Viewed: 0,
+          step4Viewed: 0,
+          step5Viewed: 0,
+          step6Completed: 0,
+        });
+      }
+
+      storage.completeOnboardingStep(userId, step, data);
+      const statusData = storage.getOnboardingStatusForUser(userId);
+
+      return res.json({
+        ok: true,
+        completedSteps: statusData.completedSteps,
+        currentStep: statusData.currentStep,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message || "Server error" });
+    }
+  });
+
+  // POST /api/onboarding/complete
+  app.post("/api/onboarding/complete", requireAuth, (req, res) => {
+    try {
+      const userId = (req.session as any).userId as number;
+      const { signatureText } = req.body as { signatureText: string };
+
+      if (!signatureText || typeof signatureText !== "string" || !signatureText.trim()) {
+        return res.status(400).json({ message: "signatureText is required" });
+      }
+
+      // Ensure onboarding record exists
+      const existing = storage.getOnboardingByUserId(userId);
+      if (!existing) {
+        storage.createOnboarding({
+          userId,
+          completedAt: null,
+          signatureText: null,
+          signedAt: null,
+          step1Viewed: 1,
+          step2Viewed: 1,
+          step3Viewed: 1,
+          step4Viewed: 1,
+          step5Viewed: 1,
+          step6Completed: 0,
+        });
+      }
+
+      // Mark signoff step in progress table
+      storage.completeOnboardingStep(userId, "signoff", JSON.stringify({ signatureText }));
+
+      // Complete onboarding — sets completed_at, signature_text, onboarding_status
+      storage.completeOnboarding(userId, signatureText.trim());
+
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message || "Server error" });
+    }
+  });
+
+  // ── END ONBOARDING ──────────────────────────────────────────────────────────
+
   // Projects
   app.get("/api/projects", requireAuth, (req, res) => {
     const userId = (req.session as any).userId;
@@ -135,13 +240,27 @@ export async function registerRoutes(server: Server, app: Express) {
       return res.status(400).json({ message: "Message content is required" });
     }
 
+    const now2 = new Date().toISOString();
     const msg = storage.createMessage({
       projectId,
       senderName: user.name,
       senderRole: "client",
       content: content.trim(),
-      createdAt: new Date().toISOString(),
+      createdAt: now2,
       isRead: 1,
+    });
+
+    // Auto-create admin notification
+    storage.createAdminNotification({
+      type: "message_received",
+      title: `New message from ${user.name}`,
+      message: content.trim().slice(0, 100),
+      clientName: user.name,
+      projectId: projectId,
+      relatedId: msg.id,
+      isRead: 0,
+      priority: "normal",
+      createdAt: now2,
     });
 
     return res.json(msg);
@@ -197,6 +316,35 @@ export async function registerRoutes(server: Server, app: Express) {
       createdAt: now,
     });
 
+    // Auto-create admin notification
+    const project2 = storage.getProjectById(projectId);
+    storage.createAdminNotification({
+      type: "ticket_created",
+      title: `New support ticket: ${subject}`,
+      message: `${user.name} submitted a ticket: "${subject}"`,
+      clientName: user.name,
+      projectId: projectId,
+      relatedId: ticket.id,
+      isRead: 0,
+      priority: priority === "urgent" ? "urgent" : "high",
+      createdAt: now,
+    });
+
+    // Auto-create admin task
+    storage.createAdminTask({
+      projectId: projectId,
+      userId: userId,
+      title: `Respond to ticket: ${subject}`,
+      description: `Client ${user.name} submitted a support ticket. Category: ${category}. Priority: ${priority || "normal"}.`,
+      assignedTo: "brandon",
+      priority: priority === "urgent" ? "urgent" : "normal",
+      status: "todo",
+      category: "follow_up",
+      dueDate: new Date(Date.now() + 86400000).toISOString().split("T")[0],
+      isAutoGenerated: 1,
+      createdAt: now,
+    });
+
     return res.json(ticket);
   });
 
@@ -221,6 +369,22 @@ export async function registerRoutes(server: Server, app: Express) {
       content: content.trim(),
       createdAt: new Date().toISOString(),
     });
+
+    // Auto-create admin notification if client reply
+    if (user.role === "client") {
+      const ticket2 = storage.getTicketById(ticketId);
+      storage.createAdminNotification({
+        type: "ticket_reply",
+        title: `New reply on ticket: ${ticket2?.subject || "Support ticket"}`,
+        message: `${user.name} replied to ticket "${ticket2?.subject || "Support ticket"}"`,
+        clientName: user.name,
+        projectId: ticket2?.projectId,
+        relatedId: ticketId,
+        isRead: 0,
+        priority: "normal",
+        createdAt: new Date().toISOString(),
+      });
+    }
 
     return res.json(reply);
   });
@@ -528,7 +692,24 @@ export async function registerRoutes(server: Server, app: Express) {
       if (!user) return res.status(401).json({ message: "User not found" });
       const { status, notes } = req.body;
       if (!status) return res.status(400).json({ message: "Status is required" });
+      const approval = storage.getApprovalById(id);
       storage.updateApprovalStatus(id, status, user.name, notes);
+
+      // Auto-create admin notification if client responded
+      if (user.role === "client" && approval) {
+        const nowApproval = new Date().toISOString();
+        storage.createAdminNotification({
+          type: "approval_response",
+          title: `Approval ${status}: ${approval.title}`,
+          message: `${user.name} ${status === "approved" ? "approved" : "rejected/requested revision for"} "${approval.title}"${notes ? `: ${notes.slice(0, 80)}` : ""}`,
+          clientName: user.name,
+          projectId: approval.projectId,
+          relatedId: id,
+          isRead: 0,
+          priority: "high",
+          createdAt: nowApproval,
+        });
+      }
       return res.json({ ok: true });
     } catch (e: any) {
       return res.status(500).json({ message: e.message });
@@ -597,11 +778,40 @@ export async function registerRoutes(server: Server, app: Express) {
         return res.status(400).json({ message: "Signature text is required" });
       }
 
+      const signedAt = new Date().toISOString();
       storage.updateLegalDocument(id, {
         status: "signed",
-        signedAt: new Date().toISOString(),
+        signedAt,
         signedBy: user.name,
         signatureText: signatureText.trim(),
+      });
+
+      // Auto-create admin notification
+      storage.createAdminNotification({
+        type: "document_signed",
+        title: `Document signed: ${doc.title}`,
+        message: `${user.name} signed "${doc.title}"`,
+        clientName: user.name,
+        projectId: doc.projectId,
+        relatedId: id,
+        isRead: 0,
+        priority: "normal",
+        createdAt: signedAt,
+      });
+
+      // Auto-create admin task to review
+      storage.createAdminTask({
+        projectId: doc.projectId,
+        userId: userId,
+        title: `Review signed ${doc.title}`,
+        description: `${user.name} has signed "${doc.title}". Please review and file.`,
+        assignedTo: "brandon",
+        priority: "normal",
+        status: "todo",
+        category: "legal",
+        dueDate: new Date(Date.now() + 86400000 * 2).toISOString().split("T")[0],
+        isAutoGenerated: 1,
+        createdAt: signedAt,
       });
 
       return res.json({ ok: true });
@@ -906,6 +1116,314 @@ export async function registerRoutes(server: Server, app: Express) {
         createdAt: now,
       });
       return res.json(doc);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ===== PHASE A: Admin Notifications Routes =====
+
+  app.get("/api/admin/notifications", requireAdmin, (req, res) => {
+    try {
+      const { read, type } = req.query;
+      const filter: any = {};
+      if (read === "unread") filter.isRead = false;
+      if (read === "read") filter.isRead = true;
+      if (type) filter.type = type as string;
+      const notifs = storage.getAdminNotifications(filter);
+      return res.json(notifs);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/admin/notifications/:id/read", requireAdmin, (req, res) => {
+    try {
+      storage.markAdminNotificationRead(parseInt(req.params.id));
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/admin/notifications/read-all", requireAdmin, (req, res) => {
+    try {
+      storage.markAllAdminNotificationsRead();
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ===== PHASE A: Admin Tasks Routes =====
+
+  app.get("/api/admin/tasks", requireAdmin, (req, res) => {
+    try {
+      const { status, assignedTo, clientId, category } = req.query;
+      const filter: any = {};
+      if (status) filter.status = status as string;
+      if (assignedTo) filter.assignedTo = assignedTo as string;
+      if (clientId) filter.clientId = parseInt(clientId as string);
+      if (category) filter.category = category as string;
+      const tasks = storage.getAdminTasks(filter);
+      // Enrich with client info
+      const enriched = tasks.map((task) => {
+        let clientName = null;
+        let clientBrandName = null;
+        if (task.userId) {
+          const u = storage.getUserById(task.userId);
+          if (u) { clientName = u.name; clientBrandName = u.brandName; }
+        } else if (task.projectId) {
+          const proj = storage.getProjectById(task.projectId);
+          if (proj) {
+            const u = storage.getUserById(proj.userId);
+            if (u) { clientName = u.name; clientBrandName = u.brandName; }
+          }
+        }
+        return { ...task, clientName, clientBrandName };
+      });
+      return res.json(enriched);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/admin/tasks", requireAdmin, (req, res) => {
+    try {
+      const { projectId, userId, title, description, assignedTo, priority, status, category, dueDate, complianceGate, notes } = req.body;
+      if (!title || !category) {
+        return res.status(400).json({ message: "title and category are required" });
+      }
+      const task = storage.createAdminTask({
+        projectId: projectId ? parseInt(projectId) : null,
+        userId: userId ? parseInt(userId) : null,
+        title,
+        description: description || null,
+        assignedTo: assignedTo || "brandon",
+        priority: priority || "normal",
+        status: status || "todo",
+        category,
+        dueDate: dueDate || null,
+        isAutoGenerated: 0,
+        complianceGate: complianceGate || null,
+        notes: notes || null,
+        createdAt: new Date().toISOString(),
+      });
+      return res.json(task);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/admin/tasks/:id", requireAdmin, (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { status, assignedTo, priority, notes, dueDate, title, description, complianceGate } = req.body;
+      const updateData: any = {};
+      if (status !== undefined) updateData.status = status;
+      if (assignedTo !== undefined) updateData.assignedTo = assignedTo;
+      if (priority !== undefined) updateData.priority = priority;
+      if (notes !== undefined) updateData.notes = notes;
+      if (dueDate !== undefined) updateData.dueDate = dueDate;
+      if (title !== undefined) updateData.title = title;
+      if (description !== undefined) updateData.description = description;
+      if (complianceGate !== undefined) updateData.complianceGate = complianceGate;
+      const updated = storage.updateAdminTask(id, updateData);
+      return res.json(updated);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ===== PHASE A: Smart Admin Dashboard Stats =====
+
+  app.get("/api/admin/dashboard-v2", requireAdmin, (req, res) => {
+    try {
+      const unreadNotifications = storage.getUnreadAdminNotificationCount();
+      const overdueTasks = storage.getOverdueTaskCount();
+
+      // Pending approvals
+      const allClients2 = storage.getAllClients();
+      let pendingApprovals = 0;
+      let unsignedDocuments = 0;
+      let totalRevenueMonth = 0;
+      let hoursLoggedMonth = 0;
+      const today2 = new Date();
+      const monthStr = today2.toISOString().slice(0, 7);
+
+      for (const client of allClients2) {
+        const clientProjects2 = storage.getProjectsByUserId(client.id);
+        const proj = clientProjects2[0];
+        if (!proj) continue;
+        const approvs = storage.getApprovalsByProjectId(proj.id);
+        pendingApprovals += approvs.filter(a => a.status === "pending").length;
+        const docs = storage.getLegalDocumentsByProjectId(proj.id);
+        unsignedDocuments += docs.filter(d => d.status === "sent" || d.status === "pending" || d.status === "viewed").length;
+        const logs = storage.getHourLogsByProjectId(proj.id);
+        hoursLoggedMonth += logs.filter(l => l.date.startsWith(monthStr)).reduce((s, l) => s + l.hours, 0);
+      }
+
+      // Monthly revenue from payments
+      const allPaymentsRaw = allClients2.flatMap(c => storage.getPaymentsByUserId(c.id));
+      totalRevenueMonth = allPaymentsRaw.filter(p => p.status === "paid" && p.paidDate && p.paidDate.startsWith(monthStr)).reduce((s, p) => s + p.amount, 0);
+
+      // Today's tasks (due today or overdue, not done)
+      const todayStr = today2.toISOString().split("T")[0];
+      const allTasks = storage.getAdminTasks();
+      const todayTasks = allTasks.filter(t => t.dueDate && t.dueDate <= todayStr && t.status !== "done").slice(0, 10);
+      const todayTasksEnriched = todayTasks.map(t => {
+        let clientName = null;
+        if (t.userId) {
+          const u = storage.getUserById(t.userId);
+          if (u) clientName = u.name;
+        } else if (t.projectId) {
+          const proj = storage.getProjectById(t.projectId);
+          if (proj) {
+            const u = storage.getUserById(proj.userId);
+            if (u) clientName = u.name;
+          }
+        }
+        return { ...t, clientName };
+      });
+
+      // Recent activity (from admin notifications, last 10)
+      const recentActivity = storage.getAdminNotifications({}).slice(0, 10);
+
+      // Client health overview
+      const clientHealth = allClients2.map(client => {
+        const clientProjects3 = storage.getProjectsByUserId(client.id);
+        const proj = clientProjects3[0];
+        if (!proj) return null;
+        const ms = storage.getMilestonesByProjectId(proj.id);
+        let totalSubs = 0; let completedSubs = 0;
+        ms.forEach(m => {
+          const subs = storage.getSubMilestonesByMilestoneId(m.id);
+          totalSubs += subs.length;
+          completedSubs += subs.filter(s => s.status === "completed").length;
+        });
+        const progress = totalSubs > 0 ? Math.round((completedSubs / totalSubs) * 100) : 0;
+        const docs = storage.getLegalDocumentsByProjectId(proj.id);
+        const pendingDocs = docs.filter(d => d.status === "sent" || d.status === "pending" || d.status === "viewed").length;
+        const approvs = storage.getApprovalsByProjectId(proj.id);
+        const pendingApprovs = approvs.filter(a => a.status === "pending").length;
+        const pendingItems = pendingDocs + pendingApprovs;
+
+        // Last activity from notifications
+        const clientNotifs = storage.getAdminNotifications({}).filter(n => n.clientName === client.name);
+        const lastActivity = clientNotifs.length > 0 ? clientNotifs[0].createdAt : proj.startDate;
+
+        const daysSince = Math.floor((Date.now() - new Date(lastActivity).getTime()) / 86400000);
+        const statusColor = pendingItems > 2 || daysSince > 14 ? "red" : daysSince > 7 ? "yellow" : "green";
+
+        const { accessCode: _, ...safeClient } = client;
+        return { ...safeClient, project: proj, progress, lastActivity, pendingItems, statusColor, daysSince };
+      }).filter(Boolean);
+
+      const activeClients = allClients2.length;
+      const openTickets = storage.getAllTickets("open").length + storage.getAllTickets("in_progress").length;
+
+      return res.json({
+        unreadNotifications,
+        overdueTasks,
+        pendingApprovals,
+        unsignedDocuments,
+        activeClients,
+        totalRevenueMonth,
+        openTickets,
+        hoursLoggedMonth,
+        todayTasks: todayTasksEnriched,
+        recentActivity,
+        clientHealth,
+      });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ===== PHASE A: Enhanced Client Creation with Documents & Tasks =====
+
+  app.post("/api/admin/clients-full", requireAdmin, (req, res) => {
+    try {
+      const { name, email, brandName, accessCode, serviceType, startDate, documents } = req.body;
+      if (!name || !email || !brandName || !accessCode || !serviceType || !startDate) {
+        return res.status(400).json({ message: "All client fields are required" });
+      }
+      const result = storage.createClientWithProject({ name, email, brandName, accessCode, serviceType, startDate });
+      const { user, project } = result;
+      const now3 = new Date().toISOString();
+
+      // Create legal documents if specified
+      if (documents && Array.isArray(documents)) {
+        const templates = storage.getAllDocumentTemplates();
+        const docConfigs: Record<string, { category: string; title: string }> = {
+          nda: { category: "nda", title: "Mutual Non-Disclosure Agreement" },
+          service_agreement: { category: "service_agreement", title: `${serviceType} Service Agreement` },
+          ip_assignment: { category: "ip_assignment", title: "IP Assignment Agreement" },
+          mutual_release: { category: "mutual_release", title: "Mutual Release Agreement" },
+        };
+        for (const docType of documents) {
+          if (!docConfigs[docType]) continue;
+          const tmpl = templates.find(t => t.category === docType);
+          const docCfg = docConfigs[docType];
+          storage.createLegalDocument({
+            projectId: project.id,
+            userId: user.id,
+            templateName: tmpl?.name || docCfg.title,
+            title: docCfg.title,
+            category: docCfg.category as any,
+            content: tmpl?.content || `[${docCfg.title} content — template not found]`,
+            status: "sent",
+            sentAt: now3,
+            signedAt: null,
+            signedBy: null,
+            signatureText: null,
+            dueDate: new Date(Date.now() + 86400000 * 7).toISOString().split("T")[0],
+            required: 1,
+            createdAt: now3,
+          });
+        }
+      }
+
+      // Auto-create onboarding tasks
+      const onboardingTasks = [
+        { title: "Send NDA", category: "legal", priority: "urgent", dueDate: new Date(Date.now() + 86400000).toISOString().split("T")[0] },
+        { title: "Send Service Agreement", category: "legal", priority: "urgent", dueDate: new Date(Date.now() + 86400000).toISOString().split("T")[0] },
+        { title: "Schedule Session 1", category: "session_prep", priority: "high", dueDate: new Date(Date.now() + 86400000 * 3).toISOString().split("T")[0] },
+        { title: "Set up Google Drive folder", category: "admin", priority: "normal", dueDate: new Date(Date.now() + 86400000 * 2).toISOString().split("T")[0] },
+        { title: `Send welcome email to ${name}`, category: "onboarding", priority: "high", dueDate: new Date(Date.now() + 86400000).toISOString().split("T")[0] },
+      ];
+
+      for (const t of onboardingTasks) {
+        storage.createAdminTask({
+          projectId: project.id,
+          userId: user.id,
+          title: t.title,
+          description: `Onboarding task for new client: ${name} (${brandName})`,
+          assignedTo: "brandon",
+          priority: t.priority as any,
+          status: "todo",
+          category: t.category as any,
+          dueDate: t.dueDate,
+          isAutoGenerated: 1,
+          createdAt: now3,
+        });
+      }
+
+      // Admin notification for new client
+      storage.createAdminNotification({
+        type: "onboarding_complete",
+        title: `New client onboarded: ${name}`,
+        message: `${name} (${brandName}) has been added. Service: ${serviceType}. Onboarding tasks created.`,
+        clientName: name,
+        projectId: project.id,
+        relatedId: user.id,
+        isRead: 0,
+        priority: "normal",
+        createdAt: now3,
+      });
+
+      const { accessCode: _, ...safeUser } = user;
+      return res.json({ user: safeUser, project });
     } catch (e: any) {
       return res.status(500).json({ message: e.message });
     }

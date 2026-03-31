@@ -5,6 +5,8 @@ import {
   users, projects, milestones, subMilestones, deliverables, messages,
   supportTickets, ticketReplies, resources, notifications, payments, sessions,
   approvals, sessionNotes, hourLogs, styles, materials, costSheets, legalDocuments, documentTemplates,
+  adminNotifications, adminTasks,
+  clientOnboarding, onboardingProgress,
   type User, type InsertUser,
   type Project, type InsertProject,
   type Milestone, type InsertMilestone,
@@ -25,6 +27,10 @@ import {
   type CostSheet, type InsertCostSheet,
   type LegalDocument, type InsertLegalDocument,
   type DocumentTemplate, type InsertDocumentTemplate,
+  type AdminNotification, type InsertAdminNotification,
+  type AdminTask, type InsertAdminTask,
+  type ClientOnboarding, type InsertClientOnboarding,
+  type OnboardingProgress,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -117,6 +123,34 @@ export interface IStorage {
   getAllDocumentTemplates(): DocumentTemplate[];
   getDocumentTemplateById(id: number): DocumentTemplate | undefined;
   createDocumentTemplate(data: InsertDocumentTemplate): DocumentTemplate;
+
+  // Admin Notifications
+  getAdminNotifications(filter?: { isRead?: boolean; type?: string }): AdminNotification[];
+  createAdminNotification(data: InsertAdminNotification): AdminNotification;
+  markAdminNotificationRead(id: number): void;
+  markAllAdminNotificationsRead(): void;
+  getUnreadAdminNotificationCount(): number;
+
+  // Admin Tasks
+  getAdminTasks(filter?: { status?: string; assignedTo?: string; clientId?: number; category?: string }): AdminTask[];
+  createAdminTask(data: InsertAdminTask): AdminTask;
+  updateAdminTask(id: number, data: Partial<InsertAdminTask>): AdminTask;
+  getOverdueTaskCount(): number;
+
+  // Onboarding (client_onboarding legacy)
+  getOnboardingByUserId(userId: number): ClientOnboarding | undefined;
+  createOnboarding(data: InsertClientOnboarding): ClientOnboarding;
+  updateOnboardingStep(userId: number, step: number): void;
+  completeOnboarding(userId: number, signatureText: string): ClientOnboarding;
+
+  // Onboarding Progress (new)
+  getOnboardingProgress(userId: number): OnboardingProgress[];
+  completeOnboardingStep(userId: number, step: string, data?: string): OnboardingProgress;
+  getOnboardingStatusForUser(userId: number): {
+    status: "not_started" | "in_progress" | "completed";
+    completedSteps: string[];
+    currentStep: string;
+  };
 
   // ===== ADMIN METHODS =====
   getAllClients(): User[];
@@ -389,7 +423,67 @@ sqlite.exec(`
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS admin_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    client_name TEXT,
+    project_id INTEGER,
+    related_id INTEGER,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    priority TEXT NOT NULL DEFAULT 'normal',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS admin_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER,
+    user_id INTEGER,
+    title TEXT NOT NULL,
+    description TEXT,
+    assigned_to TEXT NOT NULL DEFAULT 'brandon',
+    priority TEXT NOT NULL DEFAULT 'normal',
+    status TEXT NOT NULL DEFAULT 'todo',
+    category TEXT NOT NULL,
+    due_date TEXT,
+    completed_at TEXT,
+    is_auto_generated INTEGER NOT NULL DEFAULT 0,
+    compliance_gate TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS client_onboarding (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE,
+    completed_at TEXT,
+    signature_text TEXT,
+    signed_at TEXT,
+    step1_viewed INTEGER NOT NULL DEFAULT 0,
+    step2_viewed INTEGER NOT NULL DEFAULT 0,
+    step3_viewed INTEGER NOT NULL DEFAULT 0,
+    step4_viewed INTEGER NOT NULL DEFAULT 0,
+    step5_viewed INTEGER NOT NULL DEFAULT 0,
+    step6_completed INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS onboarding_progress (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    step TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    data TEXT
+  );
 `);
+
+// Add onboarding_status column to users — idempotent
+try {
+  sqlite.exec(`ALTER TABLE users ADD COLUMN onboarding_status TEXT NOT NULL DEFAULT 'not_started'`);
+} catch {
+  // Column already exists — ignore
+}
 
 export class DatabaseStorage implements IStorage {
   getUserByEmail(email: string): User | undefined {
@@ -619,6 +713,229 @@ export class DatabaseStorage implements IStorage {
 
   createDocumentTemplate(data: InsertDocumentTemplate): DocumentTemplate {
     return db.insert(documentTemplates).values(data).returning().get();
+  }
+
+  // Admin Notifications
+  getAdminNotifications(filter?: { isRead?: boolean; type?: string }): AdminNotification[] {
+    let result = db.select().from(adminNotifications).orderBy(desc(adminNotifications.createdAt)).all();
+    if (filter?.isRead !== undefined) {
+      result = result.filter(n => Boolean(n.isRead) === filter.isRead);
+    }
+    if (filter?.type) {
+      result = result.filter(n => n.type === filter.type);
+    }
+    return result;
+  }
+
+  createAdminNotification(data: InsertAdminNotification): AdminNotification {
+    return db.insert(adminNotifications).values(data).returning().get();
+  }
+
+  markAdminNotificationRead(id: number): void {
+    db.update(adminNotifications).set({ isRead: 1 }).where(eq(adminNotifications.id, id)).run();
+  }
+
+  markAllAdminNotificationsRead(): void {
+    db.update(adminNotifications).set({ isRead: 1 }).where(eq(adminNotifications.isRead, 0)).run();
+  }
+
+  getUnreadAdminNotificationCount(): number {
+    return db.select().from(adminNotifications).where(eq(adminNotifications.isRead, 0)).all().length;
+  }
+
+  // Admin Tasks
+  getAdminTasks(filter?: { status?: string; assignedTo?: string; clientId?: number; category?: string }): AdminTask[] {
+    let result = db.select().from(adminTasks).orderBy(desc(adminTasks.createdAt)).all();
+    if (filter?.status && filter.status !== "all") {
+      result = result.filter(t => t.status === filter.status);
+    }
+    if (filter?.assignedTo && filter.assignedTo !== "all") {
+      result = result.filter(t => t.assignedTo === filter.assignedTo);
+    }
+    if (filter?.clientId) {
+      const clientProjects = db.select().from(projects).where(eq(projects.userId, filter.clientId)).all();
+      const projectIds = clientProjects.map(p => p.id);
+      result = result.filter(t => t.projectId != null && projectIds.includes(t.projectId));
+    }
+    if (filter?.category && filter.category !== "all") {
+      result = result.filter(t => t.category === filter.category);
+    }
+    return result;
+  }
+
+  createAdminTask(data: InsertAdminTask): AdminTask {
+    return db.insert(adminTasks).values(data).returning().get();
+  }
+
+  updateAdminTask(id: number, data: Partial<InsertAdminTask>): AdminTask {
+    const updateData: any = { ...data };
+    if (data.status === "done" && !data.completedAt) {
+      updateData.completedAt = new Date().toISOString();
+    }
+    db.update(adminTasks).set(updateData).where(eq(adminTasks.id, id)).run();
+    return db.select().from(adminTasks).where(eq(adminTasks.id, id)).get()!;
+  }
+
+  getOverdueTaskCount(): number {
+    const today = new Date().toISOString().split("T")[0];
+    const tasks = db.select().from(adminTasks).all();
+    return tasks.filter(t => t.dueDate && t.dueDate < today && t.status !== "done").length;
+  }
+
+  // ===== ONBOARDING METHODS =====
+
+  getOnboardingByUserId(userId: number): ClientOnboarding | undefined {
+    return db.select().from(clientOnboarding).where(eq(clientOnboarding.userId, userId)).get();
+  }
+
+  createOnboarding(data: InsertClientOnboarding): ClientOnboarding {
+    return db.insert(clientOnboarding).values(data).returning().get();
+  }
+
+  updateOnboardingStep(userId: number, step: number): void {
+    const updateData: any = {};
+    if (step === 1) updateData.step1Viewed = 1;
+    else if (step === 2) updateData.step2Viewed = 1;
+    else if (step === 3) updateData.step3Viewed = 1;
+    else if (step === 4) updateData.step4Viewed = 1;
+    else if (step === 5) updateData.step5Viewed = 1;
+    else if (step === 6) updateData.step6Completed = 1;
+    db.update(clientOnboarding).set(updateData).where(eq(clientOnboarding.userId, userId)).run();
+  }
+
+  completeOnboarding(userId: number, signatureText: string): ClientOnboarding {
+    const now = new Date().toISOString();
+
+    // Update legacy client_onboarding record
+    const record = db
+      .update(clientOnboarding)
+      .set({
+        completedAt: now,
+        signatureText,
+        signedAt: now,
+        step6Completed: 1,
+      })
+      .where(eq(clientOnboarding.userId, userId))
+      .returning()
+      .get();
+
+    // Set onboarding_status = "completed" on users table
+    db.update(users)
+      .set({ onboardingStatus: "completed" })
+      .where(eq(users.id, userId))
+      .run();
+
+    // Create admin notification for completed onboarding
+    const user = db.select().from(users).where(eq(users.id, userId)).get();
+    if (user) {
+      db.insert(adminNotifications)
+        .values({
+          type: "onboarding_complete",
+          title: `Client onboarding complete: ${user.name}`,
+          message: `${user.name} (${user.brandName}) has completed the portal onboarding walkthrough and provided their digital sign-off.`,
+          clientName: user.name,
+          projectId: null,
+          relatedId: userId,
+          isRead: 0,
+          priority: "normal",
+          createdAt: now,
+        })
+        .run();
+    }
+
+    return record;
+  }
+
+  getOnboardingProgress(userId: number): OnboardingProgress[] {
+    return db
+      .select()
+      .from(onboardingProgress)
+      .where(eq(onboardingProgress.userId, userId))
+      .all();
+  }
+
+  completeOnboardingStep(
+    userId: number,
+    step: string,
+    data?: string
+  ): OnboardingProgress {
+    const now = new Date().toISOString();
+
+    // Upsert: delete existing record for this step first (idempotent)
+    db.delete(onboardingProgress)
+      .where(
+        and(
+          eq(onboardingProgress.userId, userId),
+          eq(onboardingProgress.step, step)
+        )
+      )
+      .run();
+
+    const record = db
+      .insert(onboardingProgress)
+      .values({ userId, step, completedAt: now, data: data ?? null })
+      .returning()
+      .get();
+
+    // Advance user onboarding_status to "in_progress" if not already completed
+    const user = db.select().from(users).where(eq(users.id, userId)).get();
+    if (user && user.onboardingStatus === "not_started") {
+      db.update(users)
+        .set({ onboardingStatus: "in_progress" })
+        .where(eq(users.id, userId))
+        .run();
+    }
+
+    // Also mark the legacy step flag on client_onboarding
+    const STEP_ORDER = [
+      "welcome",
+      "brand_profile",
+      "how_it_works",
+      "portal_tour",
+      "key_documents",
+      "signoff",
+    ];
+    const stepIndex = STEP_ORDER.indexOf(step) + 1; // 1-based
+    if (stepIndex > 0) {
+      this.updateOnboardingStep(userId, stepIndex);
+    }
+
+    return record;
+  }
+
+  getOnboardingStatusForUser(userId: number): {
+    status: "not_started" | "in_progress" | "completed";
+    completedSteps: string[];
+    currentStep: string;
+  } {
+    const STEP_ORDER = [
+      "welcome",
+      "brand_profile",
+      "how_it_works",
+      "portal_tour",
+      "key_documents",
+      "signoff",
+    ];
+
+    const user = db.select().from(users).where(eq(users.id, userId)).get();
+    const status = (user?.onboardingStatus ?? "not_started") as
+      | "not_started"
+      | "in_progress"
+      | "completed";
+
+    const progressRows = db
+      .select()
+      .from(onboardingProgress)
+      .where(eq(onboardingProgress.userId, userId))
+      .all();
+
+    const completedSteps = progressRows.map((r) => r.step);
+
+    // currentStep = first step not yet in completedSteps
+    const currentStep =
+      STEP_ORDER.find((s) => !completedSteps.includes(s)) ?? "signoff";
+
+    return { status, completedSteps, currentStep };
   }
 
   // ===== ADMIN METHODS =====
@@ -1662,4 +1979,311 @@ function seedDemoData() {
 
 seedAdminAccounts();
 seedDemoData();
+
+function seedPhaseAData() {
+  // Check if already seeded
+  const existing = db.select().from(adminNotifications).all();
+  if (existing.length > 0) return;
+
+  // Get demo client for references
+  const demoUser = storage.getUserByEmail("demo@leaa.com");
+  if (!demoUser) return;
+  const demoProjects = storage.getProjectsByUserId(demoUser.id);
+  const demoProject = demoProjects[0];
+
+  const now = new Date();
+  const day = (d: number) => new Date(now.getTime() - d * 86400000).toISOString();
+
+  // ===== 8 Admin Notifications (mix of read/unread) =====
+  const notifData = [
+    {
+      type: "ticket_created" as const,
+      title: "New support ticket: Need to reschedule Session 2 Week 5",
+      message: "Erin Okoye submitted a ticket: 'Need to reschedule Session 2 Week 5'",
+      clientName: "Erin Okoye",
+      projectId: demoProject?.id ?? null,
+      relatedId: 3,
+      isRead: 0,
+      priority: "high" as const,
+      createdAt: day(0),
+    },
+    {
+      type: "approval_response" as const,
+      title: "Approval response: Psychographic Profile Summary v2",
+      message: "Erin Okoye has a pending approval for 'Psychographic Profile Summary v2' — awaiting response",
+      clientName: "Erin Okoye",
+      projectId: demoProject?.id ?? null,
+      relatedId: null,
+      isRead: 0,
+      priority: "high" as const,
+      createdAt: day(1),
+    },
+    {
+      type: "document_signed" as const,
+      title: "Document signed: Phase 2 Midpoint Sign-Off",
+      message: "Erin Okoye viewed 'Phase 2 Midpoint Sign-Off' but has not yet signed",
+      clientName: "Erin Okoye",
+      projectId: demoProject?.id ?? null,
+      relatedId: null,
+      isRead: 0,
+      priority: "normal" as const,
+      createdAt: day(2),
+    },
+    {
+      type: "ticket_reply" as const,
+      title: "New reply on ticket: Revision request for mood board colors",
+      message: "Erin Okoye replied: 'I'd love to adjust the palette — could we swap out coral for dusty rose?'",
+      clientName: "Erin Okoye",
+      projectId: demoProject?.id ?? null,
+      relatedId: 2,
+      isRead: 0,
+      priority: "normal" as const,
+      createdAt: day(3),
+    },
+    {
+      type: "message_received" as const,
+      title: "New message from Erin Okoye",
+      message: "Erin sent a message about the upcoming session prep checklist",
+      clientName: "Erin Okoye",
+      projectId: demoProject?.id ?? null,
+      relatedId: null,
+      isRead: 1,
+      priority: "normal" as const,
+      createdAt: day(5),
+    },
+    {
+      type: "document_signed" as const,
+      title: "Document signed: Phase 1 Completion Sign-Off",
+      message: "Erin Okoye signed 'Phase 1 Completion Sign-Off' on Feb 10",
+      clientName: "Erin Okoye",
+      projectId: demoProject?.id ?? null,
+      relatedId: null,
+      isRead: 1,
+      priority: "normal" as const,
+      createdAt: day(50),
+    },
+    {
+      type: "onboarding_complete" as const,
+      title: "New client onboarded: Erin Okoye",
+      message: "Erin Okoye (Erin Op Basics) was onboarded. Service: Concept Development 60-Day",
+      clientName: "Erin Okoye",
+      projectId: demoProject?.id ?? null,
+      relatedId: demoUser.id,
+      isRead: 1,
+      priority: "normal" as const,
+      createdAt: day(62),
+    },
+    {
+      type: "payment_received" as const,
+      title: "Payment received: Concept Development Deposit (50%)",
+      message: "Erin Okoye paid $1,350 — Concept Development Deposit (50%)",
+      clientName: "Erin Okoye",
+      projectId: demoProject?.id ?? null,
+      relatedId: null,
+      isRead: 1,
+      priority: "low" as const,
+      createdAt: day(30),
+    },
+  ];
+
+  notifData.forEach((n) => db.insert(adminNotifications).values(n).run());
+
+  // ===== 12 Admin Tasks =====
+  const taskData = [
+    // TODO (3)
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Respond to ticket: Need to reschedule Session 2 Week 5",
+      description: "Client Erin Okoye submitted a scheduling ticket. Propose new time options.",
+      assignedTo: "brandon" as const,
+      priority: "high" as const,
+      status: "todo" as const,
+      category: "follow_up" as const,
+      dueDate: new Date(now.getTime() - 86400000).toISOString().split("T")[0], // yesterday — overdue
+      isAutoGenerated: 1,
+      complianceGate: null,
+      notes: null,
+      createdAt: day(1),
+    },
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Send Phase 2 Midpoint Sign-Off for review",
+      description: "Follow up with Erin on Phase 2 Midpoint Sign-Off — document is sent but not signed.",
+      assignedTo: "dale" as const,
+      priority: "urgent" as const,
+      status: "todo" as const,
+      category: "legal" as const,
+      dueDate: new Date().toISOString().split("T")[0], // due today
+      isAutoGenerated: 1,
+      complianceGate: null,
+      notes: null,
+      createdAt: day(2),
+    },
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Review Psychographic Profile approval request",
+      description: "Erin has a pending approval for Psychographic Profile Summary v2. Admin review needed.",
+      assignedTo: "brandon" as const,
+      priority: "normal" as const,
+      status: "todo" as const,
+      category: "deliverable" as const,
+      dueDate: new Date(now.getTime() + 86400000 * 2).toISOString().split("T")[0],
+      isAutoGenerated: 0,
+      complianceGate: null,
+      notes: null,
+      createdAt: day(1),
+    },
+    // IN PROGRESS (2)
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Prepare Session 2 Week 5 materials",
+      description: "Customer Journey Mapping session prep — worksheets, research framework, and examples.",
+      assignedTo: "dale" as const,
+      priority: "high" as const,
+      status: "in_progress" as const,
+      category: "session_prep" as const,
+      dueDate: new Date(now.getTime() + 86400000 * 3).toISOString().split("T")[0],
+      isAutoGenerated: 0,
+      complianceGate: null,
+      notes: "Created worksheet framework. Need to add 3 case study examples.",
+      createdAt: day(3),
+    },
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Fabric swatch card preparation for Session 3",
+      description: "Source 6-8 organic cotton swatch options for Erin to review. Include GOTS-certified.",
+      assignedTo: "brandon" as const,
+      priority: "normal" as const,
+      status: "in_progress" as const,
+      category: "sourcing" as const,
+      dueDate: new Date(now.getTime() + 86400000 * 7).toISOString().split("T")[0],
+      isAutoGenerated: 0,
+      complianceGate: null,
+      notes: "Contacted Piana. Waiting on samples from 2 other suppliers.",
+      createdAt: day(5),
+    },
+    // BLOCKED (1)
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Schedule Session 3: Design & Fabric Selection",
+      description: "Cannot schedule Session 3 until Phase 2 Midpoint Sign-Off is completed by client.",
+      assignedTo: "brandon" as const,
+      priority: "high" as const,
+      status: "blocked" as const,
+      category: "session_prep" as const,
+      dueDate: new Date(now.getTime() + 86400000 * 14).toISOString().split("T")[0],
+      isAutoGenerated: 1,
+      complianceGate: "Phase 2 Midpoint Sign-Off must be signed",
+      notes: "Waiting on Erin to sign Phase 2 Midpoint document before scheduling.",
+      createdAt: day(3),
+    },
+    // DONE (6)
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Send NDA to Erin Okoye",
+      description: "Onboarding: Send Mutual NDA to Erin Okoye.",
+      assignedTo: "brandon" as const,
+      priority: "urgent" as const,
+      status: "done" as const,
+      category: "legal" as const,
+      dueDate: day(61).split("T")[0],
+      completedAt: day(61),
+      isAutoGenerated: 1,
+      complianceGate: null,
+      notes: "Sent via client portal. Signed within 3 days.",
+      createdAt: day(63),
+    },
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Send Service Agreement to Erin Okoye",
+      description: "Onboarding: Send Concept Development Service Agreement.",
+      assignedTo: "brandon" as const,
+      priority: "urgent" as const,
+      status: "done" as const,
+      category: "legal" as const,
+      dueDate: day(60).split("T")[0],
+      completedAt: day(60),
+      isAutoGenerated: 1,
+      complianceGate: null,
+      notes: "Signed same day.",
+      createdAt: day(63),
+    },
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Set up Google Drive folder for Erin Op Basics",
+      description: "Create shared folder structure for the project.",
+      assignedTo: "dale" as const,
+      priority: "normal" as const,
+      status: "done" as const,
+      category: "admin" as const,
+      dueDate: day(61).split("T")[0],
+      completedAt: day(61),
+      isAutoGenerated: 1,
+      complianceGate: null,
+      notes: "Folder created and shared with client.",
+      createdAt: day(63),
+    },
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Send welcome email to Erin Okoye",
+      description: "Onboarding welcome email with portal login info.",
+      assignedTo: "brandon" as const,
+      priority: "high" as const,
+      status: "done" as const,
+      category: "onboarding" as const,
+      dueDate: day(62).split("T")[0],
+      completedAt: day(62),
+      isAutoGenerated: 1,
+      complianceGate: null,
+      notes: "Welcomed via email and added a portal intro message.",
+      createdAt: day(63),
+    },
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Prepare Session 1 recap",
+      description: "Write up Session 1 recap notes for brand brief.",
+      assignedTo: "dale" as const,
+      priority: "high" as const,
+      status: "done" as const,
+      category: "session_prep" as const,
+      dueDate: day(52).split("T")[0],
+      completedAt: day(52),
+      isAutoGenerated: 1,
+      complianceGate: null,
+      notes: "Recap included in brand brief document.",
+      createdAt: day(53),
+    },
+    {
+      projectId: demoProject?.id ?? null,
+      userId: demoUser.id,
+      title: "Review signed Phase 1 Completion Sign-Off",
+      description: "Client signed Phase 1 Completion Sign-Off. Review and file.",
+      assignedTo: "brandon" as const,
+      priority: "normal" as const,
+      status: "done" as const,
+      category: "legal" as const,
+      dueDate: day(48).split("T")[0],
+      completedAt: day(48),
+      isAutoGenerated: 1,
+      complianceGate: null,
+      notes: "Filed. Session 2 scheduling authorized.",
+      createdAt: day(50),
+    },
+  ];
+
+  taskData.forEach((t) => db.insert(adminTasks).values(t).run());
+}
+
+seedPhaseAData();
 

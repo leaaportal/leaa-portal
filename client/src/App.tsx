@@ -32,6 +32,9 @@ import AdminSourcingPage from "@/pages/admin-sourcing";
 import AdminDocumentsPage from "@/pages/admin-documents";
 import AdminApprovalsPage from "@/pages/admin-approvals";
 import AdminHoursPage from "@/pages/admin-hours";
+import AdminTasksPage from "@/pages/admin-tasks";
+import AdminNotificationsPage from "@/pages/admin-notifications";
+import ClientOnboarding from "@/pages/client-onboarding";
 
 function ClientApp() {
   return (
@@ -73,6 +76,8 @@ function AdminApp() {
         <Route path="/admin/documents" component={AdminDocumentsPage} />
         <Route path="/admin/approvals" component={AdminApprovalsPage} />
         <Route path="/admin/hours" component={AdminHoursPage} />
+        <Route path="/admin/tasks" component={AdminTasksPage} />
+        <Route path="/admin/notifications" component={AdminNotificationsPage} />
         {/* Redirect root to admin dashboard */}
         <Route path="/">
           <Redirect to="/admin" />
@@ -99,6 +104,11 @@ function AppContent() {
 
   if (!user) {
     return <LoginPage />;
+  }
+
+  // Onboarding guard for clients who haven't completed onboarding
+  if (user.role === "client" && user.onboardingStatus !== "completed") {
+    return <ClientOnboarding />;
   }
 
   if (user.role === "admin") {
