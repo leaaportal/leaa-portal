@@ -178,3 +178,138 @@ export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type SessionSchedule = typeof sessions.$inferSelect;
 export type InsertSessionSchedule = z.infer<typeof insertSessionSchema>;
 
+// ===== UPGRADE 1: Enhanced Concept Development =====
+
+export const approvals = sqliteTable("approvals", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  projectId: integer("project_id").notNull(),
+  deliverableId: integer("deliverable_id"),
+  milestoneId: integer("milestone_id"),
+  type: text("type", { enum: ["deliverable_approval", "phase_signoff", "legal_document", "design_approval", "material_approval", "sample_approval"] }).notNull(),
+  title: text("title").notNull(),
+  description: text("description"),
+  status: text("status", { enum: ["pending", "approved", "rejected", "revision_requested"] }).notNull().default("pending"),
+  approvedBy: text("approved_by"),
+  approvedAt: text("approved_at"),
+  notes: text("notes"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const sessionNotes = sqliteTable("session_notes", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  milestoneId: integer("milestone_id").notNull(),
+  content: text("content").notNull(),
+  createdBy: text("created_by").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const hourLogs = sqliteTable("hour_logs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  projectId: integer("project_id").notNull(),
+  milestoneId: integer("milestone_id"),
+  hours: real("hours").notNull(),
+  description: text("description").notNull(),
+  date: text("date").notNull(),
+  loggedBy: text("logged_by").notNull(),
+});
+
+// ===== UPGRADE 2: Design & Sourcing Pipeline =====
+
+export const styles = sqliteTable("styles", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  projectId: integer("project_id").notNull(),
+  name: text("name").notNull(),
+  category: text("category", { enum: ["top", "bottom", "outerwear", "dress", "accessory", "activewear", "other"] }).notNull(),
+  description: text("description"),
+  status: text("status", { enum: ["concept", "sketched", "tech_pack", "pattern", "sample", "approved", "production"] }).notNull().default("concept"),
+  imageUrl: text("image_url"),
+  techPackUrl: text("tech_pack_url"),
+  patternStatus: text("pattern_status", { enum: ["not_started", "first_pattern", "fitting", "revised", "graded", "approved"] }).default("not_started"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const materials = sqliteTable("materials", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  projectId: integer("project_id").notNull(),
+  styleId: integer("style_id"),
+  type: text("type", { enum: ["fabric", "trim", "label", "thread", "zipper", "button", "other"] }).notNull(),
+  name: text("name").notNull(),
+  supplier: text("supplier"),
+  costPerUnit: text("cost_per_unit"),
+  moq: text("moq"),
+  status: text("status", { enum: ["researching", "sampled", "approved", "ordered", "received"] }).notNull().default("researching"),
+  swatchUrl: text("swatch_url"),
+  notes: text("notes"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const costSheets = sqliteTable("cost_sheets", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  styleId: integer("style_id").notNull(),
+  fabricCost: real("fabric_cost"),
+  trimCost: real("trim_cost"),
+  laborCost: real("labor_cost"),
+  otherCost: real("other_cost"),
+  totalCostPerUnit: real("total_cost_per_unit"),
+  suggestedRetail: real("suggested_retail"),
+  margin: real("margin"),
+  updatedAt: text("updated_at").notNull(),
+});
+
+// ===== UPGRADE 3: Legal & Compliance Document Vault =====
+
+export const legalDocuments = sqliteTable("legal_documents", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  projectId: integer("project_id").notNull(),
+  userId: integer("user_id").notNull(),
+  templateName: text("template_name").notNull(),
+  title: text("title").notNull(),
+  category: text("category", { enum: ["nda", "service_agreement", "mutual_release", "phase_signoff", "design_approval", "ip_assignment", "other"] }).notNull(),
+  content: text("content").notNull(),
+  status: text("status", { enum: ["pending", "sent", "viewed", "signed", "expired"] }).notNull().default("pending"),
+  sentAt: text("sent_at"),
+  signedAt: text("signed_at"),
+  signedBy: text("signed_by"),
+  signatureText: text("signature_text"),
+  dueDate: text("due_date"),
+  required: integer("required").notNull().default(1),
+  createdAt: text("created_at").notNull(),
+});
+
+export const documentTemplates = sqliteTable("document_templates", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  name: text("name").notNull(),
+  category: text("category").notNull(),
+  content: text("content").notNull(),
+  isActive: integer("is_active").notNull().default(1),
+  createdAt: text("created_at").notNull(),
+});
+
+// Insert schemas for new tables
+export const insertApprovalSchema = createInsertSchema(approvals).omit({ id: true });
+export const insertSessionNoteSchema = createInsertSchema(sessionNotes).omit({ id: true });
+export const insertHourLogSchema = createInsertSchema(hourLogs).omit({ id: true });
+export const insertStyleSchema = createInsertSchema(styles).omit({ id: true });
+export const insertMaterialSchema = createInsertSchema(materials).omit({ id: true });
+export const insertCostSheetSchema = createInsertSchema(costSheets).omit({ id: true });
+export const insertLegalDocumentSchema = createInsertSchema(legalDocuments).omit({ id: true });
+export const insertDocumentTemplateSchema = createInsertSchema(documentTemplates).omit({ id: true });
+
+// Types for new tables
+export type Approval = typeof approvals.$inferSelect;
+export type InsertApproval = z.infer<typeof insertApprovalSchema>;
+export type SessionNote = typeof sessionNotes.$inferSelect;
+export type InsertSessionNote = z.infer<typeof insertSessionNoteSchema>;
+export type HourLog = typeof hourLogs.$inferSelect;
+export type InsertHourLog = z.infer<typeof insertHourLogSchema>;
+export type Style = typeof styles.$inferSelect;
+export type InsertStyle = z.infer<typeof insertStyleSchema>;
+export type Material = typeof materials.$inferSelect;
+export type InsertMaterial = z.infer<typeof insertMaterialSchema>;
+export type CostSheet = typeof costSheets.$inferSelect;
+export type InsertCostSheet = z.infer<typeof insertCostSheetSchema>;
+export type LegalDocument = typeof legalDocuments.$inferSelect;
+export type InsertLegalDocument = z.infer<typeof insertLegalDocumentSchema>;
+export type DocumentTemplate = typeof documentTemplates.$inferSelect;
+export type InsertDocumentTemplate = z.infer<typeof insertDocumentTemplateSchema>;
+

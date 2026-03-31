@@ -511,6 +511,406 @@ export async function registerRoutes(server: Server, app: Express) {
     }
   });
 
+  // ===== NEW FEATURE ROUTES — CLIENT =====
+
+  // Approvals for a project
+  app.get("/api/projects/:id/approvals", requireAuth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const approvs = storage.getApprovalsByProjectId(projectId);
+    return res.json(approvs);
+  });
+
+  app.patch("/api/approvals/:id", requireAuth, (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const userId = (req.session as any).userId;
+      const user = storage.getUserById(userId);
+      if (!user) return res.status(401).json({ message: "User not found" });
+      const { status, notes } = req.body;
+      if (!status) return res.status(400).json({ message: "Status is required" });
+      storage.updateApprovalStatus(id, status, user.name, notes);
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Session Notes
+  app.get("/api/milestones/:id/notes", requireAuth, (req, res) => {
+    const milestoneId = parseInt(req.params.id);
+    const notes = storage.getSessionNotesByMilestoneId(milestoneId);
+    return res.json(notes);
+  });
+
+  // Hour logs for a project
+  app.get("/api/projects/:id/hours", requireAuth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const logs = storage.getHourLogsByProjectId(projectId);
+    return res.json(logs);
+  });
+
+  // Styles
+  app.get("/api/projects/:id/styles", requireAuth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const projectStyles = storage.getStylesByProjectId(projectId);
+    const enriched = projectStyles.map((s) => ({
+      ...s,
+      materials: storage.getMaterialsByStyleId(s.id),
+      costSheet: storage.getCostSheetByStyleId(s.id) || null,
+    }));
+    return res.json(enriched);
+  });
+
+  // Materials for a project
+  app.get("/api/projects/:id/materials", requireAuth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const mats = storage.getMaterialsByProjectId(projectId);
+    return res.json(mats);
+  });
+
+  // Legal Documents
+  app.get("/api/projects/:id/documents", requireAuth, (req, res) => {
+    const projectId = parseInt(req.params.id);
+    const docs = storage.getLegalDocumentsByProjectId(projectId);
+    return res.json(docs);
+  });
+
+  app.get("/api/documents/:id", requireAuth, (req, res) => {
+    const doc = storage.getLegalDocumentById(parseInt(req.params.id));
+    if (!doc) return res.status(404).json({ message: "Document not found" });
+    return res.json(doc);
+  });
+
+  // Sign a document
+  app.post("/api/documents/:id/sign", requireAuth, (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const userId = (req.session as any).userId;
+      const user = storage.getUserById(userId);
+      if (!user) return res.status(401).json({ message: "User not found" });
+
+      const doc = storage.getLegalDocumentById(id);
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+
+      const { signatureText } = req.body;
+      if (!signatureText || typeof signatureText !== "string" || signatureText.trim().length === 0) {
+        return res.status(400).json({ message: "Signature text is required" });
+      }
+
+      storage.updateLegalDocument(id, {
+        status: "signed",
+        signedAt: new Date().toISOString(),
+        signedBy: user.name,
+        signatureText: signatureText.trim(),
+      });
+
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Mark document as viewed
+  app.post("/api/documents/:id/view", requireAuth, (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const doc = storage.getLegalDocumentById(id);
+      if (!doc) return res.status(404).json({ message: "Document not found" });
+      if (doc.status === "sent") {
+        storage.updateLegalDocument(id, { status: "viewed" });
+      }
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // ===== NEW FEATURE ROUTES — ADMIN =====
+
+  // Admin: Get all approvals across all clients
+  app.get("/api/admin/approvals", requireAdmin, (req, res) => {
+    try {
+      const clients = storage.getAllClients();
+      const result: any[] = [];
+      for (const client of clients) {
+        const clientProjects = storage.getProjectsByUserId(client.id);
+        const project = clientProjects[0];
+        if (!project) continue;
+        const approvs = storage.getApprovalsByProjectId(project.id);
+        const { accessCode: _, ...safeClient } = client;
+        result.push(...approvs.map((a) => ({ ...a, client: safeClient, project })));
+      }
+      return res.json(result);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Admin: Create approval
+  app.post("/api/admin/approvals", requireAdmin, (req, res) => {
+    try {
+      const { projectId, milestoneId, deliverableId, type, title, description } = req.body;
+      if (!projectId || !type || !title) {
+        return res.status(400).json({ message: "projectId, type, and title are required" });
+      }
+      const approval = storage.createApproval({
+        projectId: parseInt(projectId),
+        milestoneId: milestoneId ? parseInt(milestoneId) : null,
+        deliverableId: deliverableId ? parseInt(deliverableId) : null,
+        type,
+        title,
+        description: description || null,
+        status: "pending",
+        approvedBy: null,
+        approvedAt: null,
+        notes: null,
+        createdAt: new Date().toISOString(),
+      });
+      return res.json(approval);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Admin: Session notes
+  app.post("/api/admin/milestones/:id/notes", requireAdmin, (req, res) => {
+    try {
+      const milestoneId = parseInt(req.params.id);
+      const adminUserId = (req.session as any).userId;
+      const adminUser = storage.getUserById(adminUserId);
+      if (!adminUser) return res.status(401).json({ message: "User not found" });
+
+      const { content } = req.body;
+      if (!content) return res.status(400).json({ message: "Content is required" });
+
+      const note = storage.createSessionNote({
+        milestoneId,
+        content: content.trim(),
+        createdBy: adminUser.name,
+        createdAt: new Date().toISOString(),
+      });
+      return res.json(note);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Admin: Hour logs
+  app.get("/api/admin/hours", requireAdmin, (req, res) => {
+    try {
+      const clients = storage.getAllClients();
+      const result: any[] = [];
+      for (const client of clients) {
+        const clientProjects = storage.getProjectsByUserId(client.id);
+        const project = clientProjects[0];
+        if (!project) continue;
+        const logs = storage.getHourLogsByProjectId(project.id);
+        const { accessCode: _, ...safeClient } = client;
+        result.push(...logs.map((l) => ({ ...l, client: safeClient, project })));
+      }
+      return res.json(result);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/admin/hours", requireAdmin, (req, res) => {
+    try {
+      const adminUserId = (req.session as any).userId;
+      const adminUser = storage.getUserById(adminUserId);
+      if (!adminUser) return res.status(401).json({ message: "User not found" });
+
+      const { projectId, milestoneId, hours, description, date } = req.body;
+      if (!projectId || !hours || !description || !date) {
+        return res.status(400).json({ message: "projectId, hours, description, and date are required" });
+      }
+
+      const log = storage.createHourLog({
+        projectId: parseInt(projectId),
+        milestoneId: milestoneId ? parseInt(milestoneId) : null,
+        hours: parseFloat(hours),
+        description: description.trim(),
+        date,
+        loggedBy: adminUser.name,
+      });
+      return res.json(log);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Admin: Styles
+  app.get("/api/admin/styles", requireAdmin, (req, res) => {
+    try {
+      const clients = storage.getAllClients();
+      const result: any[] = [];
+      for (const client of clients) {
+        const clientProjects = storage.getProjectsByUserId(client.id);
+        const project = clientProjects[0];
+        if (!project) continue;
+        const projectStyles = storage.getStylesByProjectId(project.id);
+        const { accessCode: _, ...safeClient } = client;
+        result.push(...projectStyles.map((s) => ({ ...s, client: safeClient, project })));
+      }
+      return res.json(result);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/admin/styles", requireAdmin, (req, res) => {
+    try {
+      const { projectId, name, category, description, status } = req.body;
+      if (!projectId || !name || !category) {
+        return res.status(400).json({ message: "projectId, name, and category are required" });
+      }
+      const style = storage.createStyle({
+        projectId: parseInt(projectId),
+        name,
+        category,
+        description: description || null,
+        status: status || "concept",
+        imageUrl: null,
+        techPackUrl: null,
+        patternStatus: "not_started",
+        createdAt: new Date().toISOString(),
+      });
+      return res.json(style);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/admin/styles/:id", requireAdmin, (req, res) => {
+    try {
+      const { name, category, description, status, patternStatus, techPackUrl } = req.body;
+      storage.updateStyle(parseInt(req.params.id), { name, category, description, status, patternStatus, techPackUrl });
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Admin: Materials
+  app.post("/api/admin/materials", requireAdmin, (req, res) => {
+    try {
+      const { projectId, styleId, type, name, supplier, costPerUnit, moq, status, notes } = req.body;
+      if (!projectId || !type || !name) {
+        return res.status(400).json({ message: "projectId, type, and name are required" });
+      }
+      const material = storage.createMaterial({
+        projectId: parseInt(projectId),
+        styleId: styleId ? parseInt(styleId) : null,
+        type,
+        name,
+        supplier: supplier || null,
+        costPerUnit: costPerUnit || null,
+        moq: moq || null,
+        status: status || "researching",
+        swatchUrl: null,
+        notes: notes || null,
+        createdAt: new Date().toISOString(),
+      });
+      return res.json(material);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.patch("/api/admin/materials/:id", requireAdmin, (req, res) => {
+    try {
+      const data = req.body;
+      storage.updateMaterial(parseInt(req.params.id), data);
+      return res.json({ ok: true });
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Admin: Document templates
+  app.get("/api/admin/document-templates", requireAdmin, (req, res) => {
+    try {
+      const templates = storage.getAllDocumentTemplates();
+      return res.json(templates);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/admin/document-templates", requireAdmin, (req, res) => {
+    try {
+      const { name, category, content } = req.body;
+      if (!name || !category || !content) {
+        return res.status(400).json({ message: "name, category, and content are required" });
+      }
+      const template = storage.createDocumentTemplate({
+        name,
+        category,
+        content,
+        isActive: 1,
+        createdAt: new Date().toISOString(),
+      });
+      return res.json(template);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  // Admin: Legal documents — get all, send to client
+  app.get("/api/admin/documents", requireAdmin, (req, res) => {
+    try {
+      const clients = storage.getAllClients();
+      const result: any[] = [];
+      for (const client of clients) {
+        const clientProjects = storage.getProjectsByUserId(client.id);
+        const project = clientProjects[0];
+        if (!project) continue;
+        const docs = storage.getLegalDocumentsByProjectId(project.id);
+        const { accessCode: _, ...safeClient } = client;
+        result.push(...docs.map((d) => ({ ...d, client: safeClient, project })));
+      }
+      return res.json(result);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
+  app.post("/api/admin/documents", requireAdmin, (req, res) => {
+    try {
+      const { projectId, userId, templateId, title, category, content, dueDate, required } = req.body;
+      if (!projectId || !userId || !title || !category || !content) {
+        return res.status(400).json({ message: "projectId, userId, title, category, and content are required" });
+      }
+
+      const now = new Date().toISOString();
+      let templateName = "Custom Document";
+      if (templateId) {
+        const tmpl = storage.getDocumentTemplateById(parseInt(templateId));
+        if (tmpl) templateName = tmpl.name;
+      }
+
+      const doc = storage.createLegalDocument({
+        projectId: parseInt(projectId),
+        userId: parseInt(userId),
+        templateName,
+        title,
+        category,
+        content,
+        status: "sent",
+        sentAt: now,
+        signedAt: null,
+        signedBy: null,
+        signatureText: null,
+        dueDate: dueDate || null,
+        required: required ? 1 : 0,
+        createdAt: now,
+      });
+      return res.json(doc);
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message });
+    }
+  });
+
   // ===== END ADMIN ROUTES =====
 
   // Dashboard summary (enhanced)

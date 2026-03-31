@@ -13,6 +13,9 @@ import MessagesPage from "@/pages/messages";
 import SupportPage from "@/pages/support";
 import ResourcesPage from "@/pages/resources";
 import ProfilePage from "@/pages/profile";
+import DesignBoardPage from "@/pages/design-board";
+import SourcingPage from "@/pages/sourcing";
+import DocumentsPage from "@/pages/documents";
 import NotFound from "@/pages/not-found";
 import { AppLayout } from "@/components/app-layout";
 
@@ -24,6 +27,11 @@ import AdminProjects from "@/pages/admin-projects";
 import AdminTickets from "@/pages/admin-tickets";
 import AdminMessages from "@/pages/admin-messages";
 import AdminDeliverables from "@/pages/admin-deliverables";
+import AdminDesignPage from "@/pages/admin-design";
+import AdminSourcingPage from "@/pages/admin-sourcing";
+import AdminDocumentsPage from "@/pages/admin-documents";
+import AdminApprovalsPage from "@/pages/admin-approvals";
+import AdminHoursPage from "@/pages/admin-hours";
 
 function ClientApp() {
   return (
@@ -32,6 +40,9 @@ function ClientApp() {
         <Route path="/" component={DashboardPage} />
         <Route path="/milestones" component={MilestonesPage} />
         <Route path="/deliverables" component={DeliverablesPage} />
+        <Route path="/design-board" component={DesignBoardPage} />
+        <Route path="/sourcing" component={SourcingPage} />
+        <Route path="/documents" component={DocumentsPage} />
         <Route path="/messages" component={MessagesPage} />
         <Route path="/support" component={SupportPage} />
         <Route path="/resources" component={ResourcesPage} />
@@ -57,6 +68,11 @@ function AdminApp() {
         <Route path="/admin/tickets" component={AdminTickets} />
         <Route path="/admin/messages" component={AdminMessages} />
         <Route path="/admin/deliverables" component={AdminDeliverables} />
+        <Route path="/admin/design" component={AdminDesignPage} />
+        <Route path="/admin/sourcing" component={AdminSourcingPage} />
+        <Route path="/admin/documents" component={AdminDocumentsPage} />
+        <Route path="/admin/approvals" component={AdminApprovalsPage} />
+        <Route path="/admin/hours" component={AdminHoursPage} />
         {/* Redirect root to admin dashboard */}
         <Route path="/">
           <Redirect to="/admin" />

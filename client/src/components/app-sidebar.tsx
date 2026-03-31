@@ -17,6 +17,11 @@ import {
   BookOpen,
   ShieldCheck,
   ArrowLeftRight,
+  Shirt,
+  Scissors,
+  FileText,
+  CheckSquare,
+  Timer,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
@@ -38,7 +43,10 @@ import leaaLogo from "@assets/leaa-logo.jpg";
 const mainNav = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "My Project", url: "/milestones", icon: Target },
+  { title: "Design Board", url: "/design-board", icon: Shirt },
+  { title: "Materials & Sourcing", url: "/sourcing", icon: Scissors },
   { title: "Deliverables", url: "/deliverables", icon: FileDown },
+  { title: "Documents", url: "/documents", icon: FileText },
   { title: "Messages", url: "/messages", icon: MessageSquare },
   { title: "Support", url: "/support", icon: LifeBuoy },
   { title: "Resources", url: "/resources", icon: Library },
@@ -51,6 +59,11 @@ const adminNav = [
   { title: "Tickets", url: "/admin/tickets", icon: Ticket },
   { title: "Messages", url: "/admin/messages", icon: MessageSquare },
   { title: "Deliverables", url: "/admin/deliverables", icon: Package },
+  { title: "Design Management", url: "/admin/design", icon: Shirt },
+  { title: "Sourcing", url: "/admin/sourcing", icon: Scissors },
+  { title: "Documents & Legal", url: "/admin/documents", icon: FileText },
+  { title: "Approvals", url: "/admin/approvals", icon: CheckSquare },
+  { title: "Hour Tracking", url: "/admin/hours", icon: Timer },
 ];
 
 const quickLinks = [

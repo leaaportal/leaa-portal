@@ -4,6 +4,7 @@ import { eq, and, desc, sum, count, ne } from "drizzle-orm";
 import {
   users, projects, milestones, subMilestones, deliverables, messages,
   supportTickets, ticketReplies, resources, notifications, payments, sessions,
+  approvals, sessionNotes, hourLogs, styles, materials, costSheets, legalDocuments, documentTemplates,
   type User, type InsertUser,
   type Project, type InsertProject,
   type Milestone, type InsertMilestone,
@@ -16,6 +17,14 @@ import {
   type Notification, type InsertNotification,
   type Payment, type InsertPayment,
   type SessionSchedule, type InsertSessionSchedule,
+  type Approval, type InsertApproval,
+  type SessionNote, type InsertSessionNote,
+  type HourLog, type InsertHourLog,
+  type Style, type InsertStyle,
+  type Material, type InsertMaterial,
+  type CostSheet, type InsertCostSheet,
+  type LegalDocument, type InsertLegalDocument,
+  type DocumentTemplate, type InsertDocumentTemplate,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -66,6 +75,48 @@ export interface IStorage {
 
   // Sessions
   getSessionsByProjectId(projectId: number): SessionSchedule[];
+
+  // Approvals
+  getApprovalsByProjectId(projectId: number): Approval[];
+  getApprovalById(id: number): Approval | undefined;
+  createApproval(data: InsertApproval): Approval;
+  updateApprovalStatus(id: number, status: string, approvedBy?: string, notes?: string): void;
+
+  // Session Notes
+  getSessionNotesByMilestoneId(milestoneId: number): SessionNote[];
+  createSessionNote(data: InsertSessionNote): SessionNote;
+
+  // Hour Logs
+  getHourLogsByProjectId(projectId: number): HourLog[];
+  createHourLog(data: InsertHourLog): HourLog;
+
+  // Styles
+  getStylesByProjectId(projectId: number): Style[];
+  getStyleById(id: number): Style | undefined;
+  createStyle(data: InsertStyle): Style;
+  updateStyle(id: number, data: Partial<InsertStyle>): void;
+
+  // Materials
+  getMaterialsByProjectId(projectId: number): Material[];
+  getMaterialsByStyleId(styleId: number): Material[];
+  createMaterial(data: InsertMaterial): Material;
+  updateMaterial(id: number, data: Partial<InsertMaterial>): void;
+
+  // Cost Sheets
+  getCostSheetByStyleId(styleId: number): CostSheet | undefined;
+  createCostSheet(data: InsertCostSheet): CostSheet;
+  updateCostSheet(id: number, data: Partial<InsertCostSheet>): void;
+
+  // Legal Documents
+  getLegalDocumentsByProjectId(projectId: number): LegalDocument[];
+  getLegalDocumentById(id: number): LegalDocument | undefined;
+  createLegalDocument(data: InsertLegalDocument): LegalDocument;
+  updateLegalDocument(id: number, data: Partial<InsertLegalDocument>): void;
+
+  // Document Templates
+  getAllDocumentTemplates(): DocumentTemplate[];
+  getDocumentTemplateById(id: number): DocumentTemplate | undefined;
+  createDocumentTemplate(data: InsertDocumentTemplate): DocumentTemplate;
 
   // ===== ADMIN METHODS =====
   getAllClients(): User[];
@@ -237,6 +288,107 @@ sqlite.exec(`
     prep_checklist TEXT,
     status TEXT NOT NULL DEFAULT 'upcoming'
   );
+
+  CREATE TABLE IF NOT EXISTS approvals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    deliverable_id INTEGER,
+    milestone_id INTEGER,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    approved_by TEXT,
+    approved_at TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS session_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    milestone_id INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS hour_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    milestone_id INTEGER,
+    hours REAL NOT NULL,
+    description TEXT NOT NULL,
+    date TEXT NOT NULL,
+    logged_by TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS styles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'concept',
+    image_url TEXT,
+    tech_pack_url TEXT,
+    pattern_status TEXT DEFAULT 'not_started',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS materials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    style_id INTEGER,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    supplier TEXT,
+    cost_per_unit TEXT,
+    moq TEXT,
+    status TEXT NOT NULL DEFAULT 'researching',
+    swatch_url TEXT,
+    notes TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS cost_sheets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    style_id INTEGER NOT NULL,
+    fabric_cost REAL,
+    trim_cost REAL,
+    labor_cost REAL,
+    other_cost REAL,
+    total_cost_per_unit REAL,
+    suggested_retail REAL,
+    margin REAL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS legal_documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    template_name TEXT NOT NULL,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    sent_at TEXT,
+    signed_at TEXT,
+    signed_by TEXT,
+    signature_text TEXT,
+    due_date TEXT,
+    required INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS document_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    content TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+  );
 `);
 
 export class DatabaseStorage implements IStorage {
@@ -349,6 +501,124 @@ export class DatabaseStorage implements IStorage {
   // Sessions
   getSessionsByProjectId(projectId: number): SessionSchedule[] {
     return db.select().from(sessions).where(eq(sessions.projectId, projectId)).orderBy(sessions.scheduledAt).all();
+  }
+
+  // ===== NEW FEATURE METHODS =====
+
+  // Approvals
+  getApprovalsByProjectId(projectId: number): Approval[] {
+    return db.select().from(approvals).where(eq(approvals.projectId, projectId)).orderBy(desc(approvals.createdAt)).all();
+  }
+
+  getApprovalById(id: number): Approval | undefined {
+    return db.select().from(approvals).where(eq(approvals.id, id)).get();
+  }
+
+  createApproval(data: InsertApproval): Approval {
+    return db.insert(approvals).values(data).returning().get();
+  }
+
+  updateApprovalStatus(id: number, status: string, approvedBy?: string, notes?: string): void {
+    const updateData: any = { status: status as any };
+    if (approvedBy) updateData.approvedBy = approvedBy;
+    if (notes) updateData.notes = notes;
+    if (status === "approved") updateData.approvedAt = new Date().toISOString();
+    db.update(approvals).set(updateData).where(eq(approvals.id, id)).run();
+  }
+
+  // Session Notes
+  getSessionNotesByMilestoneId(milestoneId: number): SessionNote[] {
+    return db.select().from(sessionNotes).where(eq(sessionNotes.milestoneId, milestoneId)).orderBy(sessionNotes.createdAt).all();
+  }
+
+  createSessionNote(data: InsertSessionNote): SessionNote {
+    return db.insert(sessionNotes).values(data).returning().get();
+  }
+
+  // Hour Logs
+  getHourLogsByProjectId(projectId: number): HourLog[] {
+    return db.select().from(hourLogs).where(eq(hourLogs.projectId, projectId)).orderBy(desc(hourLogs.date)).all();
+  }
+
+  createHourLog(data: InsertHourLog): HourLog {
+    return db.insert(hourLogs).values(data).returning().get();
+  }
+
+  // Styles
+  getStylesByProjectId(projectId: number): Style[] {
+    return db.select().from(styles).where(eq(styles.projectId, projectId)).all();
+  }
+
+  getStyleById(id: number): Style | undefined {
+    return db.select().from(styles).where(eq(styles.id, id)).get();
+  }
+
+  createStyle(data: InsertStyle): Style {
+    return db.insert(styles).values(data).returning().get();
+  }
+
+  updateStyle(id: number, data: Partial<InsertStyle>): void {
+    db.update(styles).set(data as any).where(eq(styles.id, id)).run();
+  }
+
+  // Materials
+  getMaterialsByProjectId(projectId: number): Material[] {
+    return db.select().from(materials).where(eq(materials.projectId, projectId)).all();
+  }
+
+  getMaterialsByStyleId(styleId: number): Material[] {
+    return db.select().from(materials).where(eq(materials.styleId, styleId)).all();
+  }
+
+  createMaterial(data: InsertMaterial): Material {
+    return db.insert(materials).values(data).returning().get();
+  }
+
+  updateMaterial(id: number, data: Partial<InsertMaterial>): void {
+    db.update(materials).set(data as any).where(eq(materials.id, id)).run();
+  }
+
+  // Cost Sheets
+  getCostSheetByStyleId(styleId: number): CostSheet | undefined {
+    return db.select().from(costSheets).where(eq(costSheets.styleId, styleId)).get();
+  }
+
+  createCostSheet(data: InsertCostSheet): CostSheet {
+    return db.insert(costSheets).values(data).returning().get();
+  }
+
+  updateCostSheet(id: number, data: Partial<InsertCostSheet>): void {
+    db.update(costSheets).set(data as any).where(eq(costSheets.id, id)).run();
+  }
+
+  // Legal Documents
+  getLegalDocumentsByProjectId(projectId: number): LegalDocument[] {
+    return db.select().from(legalDocuments).where(eq(legalDocuments.projectId, projectId)).orderBy(desc(legalDocuments.createdAt)).all();
+  }
+
+  getLegalDocumentById(id: number): LegalDocument | undefined {
+    return db.select().from(legalDocuments).where(eq(legalDocuments.id, id)).get();
+  }
+
+  createLegalDocument(data: InsertLegalDocument): LegalDocument {
+    return db.insert(legalDocuments).values(data).returning().get();
+  }
+
+  updateLegalDocument(id: number, data: Partial<InsertLegalDocument>): void {
+    db.update(legalDocuments).set(data as any).where(eq(legalDocuments.id, id)).run();
+  }
+
+  // Document Templates
+  getAllDocumentTemplates(): DocumentTemplate[] {
+    return db.select().from(documentTemplates).where(eq(documentTemplates.isActive, 1)).all();
+  }
+
+  getDocumentTemplateById(id: number): DocumentTemplate | undefined {
+    return db.select().from(documentTemplates).where(eq(documentTemplates.id, id)).get();
+  }
+
+  createDocumentTemplate(data: InsertDocumentTemplate): DocumentTemplate {
+    return db.insert(documentTemplates).values(data).returning().get();
   }
 
   // ===== ADMIN METHODS =====
@@ -1070,6 +1340,324 @@ function seedDemoData() {
   sessionsData.forEach((s) => {
     db.insert(sessions).values(s).run();
   });
+
+  // ===== NEW SEED DATA =====
+
+  // Styles for Erin Op Basics
+  const style1 = db.insert(styles).values({
+    projectId: project.id,
+    name: "Essential Tank",
+    category: "top",
+    description: "Minimalist ribbed tank in organic cotton blend. Versatile base layer for the collection.",
+    status: "tech_pack",
+    imageUrl: null,
+    techPackUrl: "#",
+    patternStatus: "first_pattern",
+    createdAt: "2026-02-20T00:00:00Z",
+  }).returning().get();
+
+  const style2 = db.insert(styles).values({
+    projectId: project.id,
+    name: "Performance Legging",
+    category: "activewear",
+    description: "High-waist compression legging with moisture-wicking 4-way stretch fabric.",
+    status: "sketched",
+    imageUrl: null,
+    techPackUrl: null,
+    patternStatus: "not_started",
+    createdAt: "2026-02-25T00:00:00Z",
+  }).returning().get();
+
+  const style3 = db.insert(styles).values({
+    projectId: project.id,
+    name: "Oversized Hoodie",
+    category: "top",
+    description: "Relaxed-fit pullover hoodie with kangaroo pocket. Premium French terry construction.",
+    status: "concept",
+    imageUrl: null,
+    techPackUrl: null,
+    patternStatus: "not_started",
+    createdAt: "2026-03-01T00:00:00Z",
+  }).returning().get();
+
+  // Materials
+  db.insert(materials).values([
+    {
+      projectId: project.id,
+      styleId: style1.id,
+      type: "fabric",
+      name: "GOTS Organic Cotton Rib 2x2",
+      supplier: "Piana Nonwovens",
+      costPerUnit: "$8.50/yd",
+      moq: "50 yards",
+      status: "approved",
+      swatchUrl: null,
+      notes: "GOTS certified. Available in 12 colorways. Lead time 4 weeks.",
+      createdAt: "2026-02-22T00:00:00Z",
+    },
+    {
+      projectId: project.id,
+      styleId: style2.id,
+      type: "fabric",
+      name: "Performance Stretch Jersey (88/12)",
+      supplier: "Repreve Fabrics",
+      costPerUnit: "$12.00/yd",
+      moq: "100 yards",
+      status: "sampled",
+      swatchUrl: null,
+      notes: "Made from recycled plastic bottles. 4-way stretch. Moisture wicking.",
+      createdAt: "2026-03-01T00:00:00Z",
+    },
+    {
+      projectId: project.id,
+      styleId: style1.id,
+      type: "trim",
+      name: "Flat Elastic Waistband — 1.5in",
+      supplier: "Stretchline Holdings",
+      costPerUnit: "$0.45/unit",
+      moq: "500 units",
+      status: "approved",
+      swatchUrl: null,
+      notes: "Soft-touch finish. Pre-shrunk.",
+      createdAt: "2026-02-28T00:00:00Z",
+    },
+    {
+      projectId: project.id,
+      styleId: style3.id,
+      type: "zipper",
+      name: "YKK #5 Coil Zipper — 10in",
+      supplier: "YKK USA",
+      costPerUnit: "$1.20/unit",
+      moq: "200 units",
+      status: "researching",
+      swatchUrl: null,
+      notes: "Standard front pocket zipper. Multiple finish options.",
+      createdAt: "2026-03-05T00:00:00Z",
+    },
+    {
+      projectId: project.id,
+      styleId: null,
+      type: "label",
+      name: "Woven Care Label — LEAA Standard",
+      supplier: "Rapid Tag & Label",
+      costPerUnit: "$0.28/unit",
+      moq: "1000 units",
+      status: "ordered",
+      swatchUrl: null,
+      notes: "All styles use same care label. Ordered for initial run.",
+      createdAt: "2026-03-10T00:00:00Z",
+    },
+  ]).run();
+
+  // Cost Sheet for Essential Tank
+  db.insert(costSheets).values({
+    styleId: style1.id,
+    fabricCost: 4.25,
+    trimCost: 0.85,
+    laborCost: 6.50,
+    otherCost: 1.10,
+    totalCostPerUnit: 12.70,
+    suggestedRetail: 48.00,
+    margin: 73.5,
+    updatedAt: "2026-03-15T00:00:00Z",
+  }).run();
+
+  // Legal Documents
+  const ndaDoc = db.insert(legalDocuments).values({
+    projectId: project.id,
+    userId: user.id,
+    templateName: "LEAA Mutual NDA",
+    title: "Mutual Non-Disclosure Agreement",
+    category: "nda",
+    content: `MUTUAL NON-DISCLOSURE AGREEMENT\n\nThis Mutual Non-Disclosure Agreement ("Agreement") is entered into as of February 1, 2026, by and between Lane Ellis Apparel Agency LLC ("LEAA") and Erin Okoye d/b/a Erin Op Basics ("Client").\n\n1. PURPOSE\nThe parties wish to explore a potential business relationship in connection with apparel design and development services ("Purpose"). In connection with the Purpose, each party may disclose to the other certain confidential information.\n\n2. DEFINITION OF CONFIDENTIAL INFORMATION\n"Confidential Information" means any information disclosed by one party to the other, either directly or indirectly, that is designated as confidential or that reasonably should be understood to be confidential given the nature of the information.\n\n3. OBLIGATIONS\nEach party agrees to hold the other party's Confidential Information in strict confidence, to use such information solely for the Purpose, and not to disclose such information to any third party without the prior written consent of the disclosing party.\n\n4. TERM\nThis Agreement shall remain in effect for a period of three (3) years from the date first written above.\n\n5. GOVERNING LAW\nThis Agreement shall be governed by the laws of the State of Texas.\n\nIN WITNESS WHEREOF, the parties have executed this Agreement as of the date first written above.`,
+    status: "signed",
+    sentAt: "2026-01-28T00:00:00Z",
+    signedAt: "2026-01-31T00:00:00Z",
+    signedBy: "Erin Okoye",
+    signatureText: "Erin Okoye",
+    dueDate: "2026-02-01",
+    required: 1,
+    createdAt: "2026-01-28T00:00:00Z",
+  }).returning().get();
+
+  db.insert(legalDocuments).values({
+    projectId: project.id,
+    userId: user.id,
+    templateName: "LEAA Service Agreement",
+    title: "Concept Development Service Agreement",
+    category: "service_agreement",
+    content: `SERVICE AGREEMENT\n\nThis Service Agreement ("Agreement") is entered into as of February 1, 2026, by and between Lane Ellis Apparel Agency LLC ("LEAA") and Erin Okoye d/b/a Erin Op Basics ("Client").\n\n1. SERVICES\nLEAA agrees to provide the following services to Client: 60-Day Concept Development Program, consisting of four structured sessions totaling 36 hours of dedicated apparel development consulting.\n\n2. COMPENSATION\nClient agrees to pay LEAA a total fee of $2,700, payable as follows: 50% deposit ($1,350) due upon signing, and 50% balance ($1,350) due upon completion of Session 3.\n\n3. DELIVERABLES\nLEAA will provide the following deliverables upon completion: Brand Brief, Mood Board, Customer Persona Deck, Competitive Landscape Analysis, Design Direction Document, Fabric & Color Palette Selections, Tech Packs (up to 5 styles), and LEAA Client Pathway Proposal.\n\n4. INTELLECTUAL PROPERTY\nUpon receipt of full payment, all deliverables created specifically for Client shall become the property of Client. LEAA retains the right to use general methodologies and processes in future engagements.\n\n5. REVISION POLICY\nEach deliverable includes one round of revisions. Additional revisions are available at $125/hour.\n\nIN WITNESS WHEREOF, the parties have executed this Agreement.`,
+    status: "signed",
+    sentAt: "2026-02-01T00:00:00Z",
+    signedAt: "2026-02-01T00:00:00Z",
+    signedBy: "Erin Okoye",
+    signatureText: "Erin Okoye",
+    dueDate: "2026-02-01",
+    required: 1,
+    createdAt: "2026-02-01T00:00:00Z",
+  }).run();
+
+  db.insert(legalDocuments).values({
+    projectId: project.id,
+    userId: user.id,
+    templateName: "LEAA Phase Sign-Off",
+    title: "Phase 1 Completion Sign-Off",
+    category: "phase_signoff",
+    content: `PHASE 1 COMPLETION SIGN-OFF\n\nProject: Erin Op Basics — Concept Development 60-Day\nPhase: Session 1 — Understanding the Vision\nCompletion Date: February 8, 2026\n\nI, Erin Okoye, hereby acknowledge and confirm that:\n\n1. Session 1 (Understanding the Vision) has been completed to my satisfaction.\n2. I have received and reviewed all Phase 1 deliverables, including: Brand Brief — Erin Op Basics (v2), Concept Direction Deck (v1), and Mood Board Framework (PDF).\n3. I approve these deliverables and authorize LEAA to proceed to Session 2: Customer Profile Development.\n4. I understand that proceeding to Session 2 constitutes my agreement that Phase 1 work is complete and accepted.\n\nThis sign-off authorizes LEAA to begin scheduling Session 2 sessions and associated work.`,
+    status: "signed",
+    sentAt: "2026-02-08T00:00:00Z",
+    signedAt: "2026-02-10T00:00:00Z",
+    signedBy: "Erin Okoye",
+    signatureText: "Erin Okoye",
+    dueDate: "2026-02-12",
+    required: 1,
+    createdAt: "2026-02-08T00:00:00Z",
+  }).run();
+
+  db.insert(legalDocuments).values({
+    projectId: project.id,
+    userId: user.id,
+    templateName: "LEAA Phase Sign-Off",
+    title: "Phase 2 Midpoint Sign-Off",
+    category: "phase_signoff",
+    content: `PHASE 2 MIDPOINT SIGN-OFF\n\nProject: Erin Op Basics — Concept Development 60-Day\nPhase: Session 2 — Customer Profile Development (Weeks 1–4)\nMidpoint Date: March 15, 2026\n\nI, Erin Okoye, hereby acknowledge and confirm that:\n\n1. The first four weeks of Session 2 (Customer Profile Development) have been completed.\n2. I have received and reviewed all mid-phase deliverables, including: Customer Demographics Report and Psychographic Profile Summary.\n3. I approve these deliverables and authorize LEAA to continue with Session 2 Weeks 5–8.\n4. I understand the remaining balance of $1,350 is due upon completion of Session 3.\n\nPlease review the documents above, then type your name and date below to sign.`,
+    status: "sent",
+    sentAt: "2026-03-16T00:00:00Z",
+    signedAt: null,
+    signedBy: null,
+    signatureText: null,
+    dueDate: "2026-04-01",
+    required: 1,
+    createdAt: "2026-03-16T00:00:00Z",
+  }).run();
+
+  // Approvals
+  db.insert(approvals).values([
+    {
+      projectId: project.id,
+      deliverableId: null,
+      milestoneId: m1.id,
+      type: "deliverable_approval",
+      title: "Brand Brief — Erin Op Basics v2",
+      description: "Please review and approve the final brand brief before Session 2 begins.",
+      status: "approved",
+      approvedBy: "Erin Okoye",
+      approvedAt: "2026-02-10T00:00:00Z",
+      notes: "Looks great! The brand positioning is exactly right.",
+      createdAt: "2026-02-08T00:00:00Z",
+    },
+    {
+      projectId: project.id,
+      deliverableId: null,
+      milestoneId: m1.id,
+      type: "deliverable_approval",
+      title: "Mood Board Framework",
+      description: "Approve the mood board direction to lock in the visual language for the collection.",
+      status: "approved",
+      approvedBy: "Erin Okoye",
+      approvedAt: "2026-02-12T00:00:00Z",
+      notes: "Love the earthy tones and clean aesthetic direction.",
+      createdAt: "2026-02-08T00:00:00Z",
+    },
+    {
+      projectId: project.id,
+      deliverableId: null,
+      milestoneId: m2.id,
+      type: "deliverable_approval",
+      title: "Psychographic Profile Summary v2",
+      description: "Please review the updated psychographic profile and approve before we move into shopping behavior analysis.",
+      status: "pending",
+      approvedBy: null,
+      approvedAt: null,
+      notes: null,
+      createdAt: "2026-03-01T00:00:00Z",
+    },
+  ]).run();
+
+  // Hour Logs
+  db.insert(hourLogs).values([
+    {
+      projectId: project.id,
+      milestoneId: m1.id,
+      hours: 2.0,
+      description: "Initial brand consultation call — brand story, target market, creative vision",
+      date: "2026-02-01",
+      loggedBy: "Dale Lane",
+    },
+    {
+      projectId: project.id,
+      milestoneId: m1.id,
+      hours: 1.5,
+      description: "Market research & competitor scan — sustainable basics landscape",
+      date: "2026-02-03",
+      loggedBy: "Brandon Ellis",
+    },
+    {
+      projectId: project.id,
+      milestoneId: m1.id,
+      hours: 2.5,
+      description: "Brand brief creation, mood board framework, vision alignment review",
+      date: "2026-02-06",
+      loggedBy: "Dale Lane",
+    },
+    {
+      projectId: project.id,
+      milestoneId: m2.id,
+      hours: 2.0,
+      description: "Week 1: Customer demographics deep dive session",
+      date: "2026-02-15",
+      loggedBy: "Dale Lane",
+    },
+    {
+      projectId: project.id,
+      milestoneId: m2.id,
+      hours: 2.0,
+      description: "Week 2: Psychographic profiling session — sustainability values & lifestyle",
+      date: "2026-02-22",
+      loggedBy: "Brandon Ellis",
+    },
+  ]).run();
+
+  // Session Notes
+  db.insert(sessionNotes).values([
+    {
+      milestoneId: m1.id,
+      content: "Excellent kickoff session. Erin has a very clear vision for a sustainable basics line targeting modern professional women ages 28-42. Key insight: she wants pieces that transition from work to weekend without sacrificing sustainability. Core aesthetic: clean, minimal, earthy — think Everlane meets Patagonia at a contemporary price point ($45-$95). Her hero customer: city-based, eco-conscious, values quality over quantity. Strong starting point for the brand brief.",
+      createdBy: "Dale Lane",
+      createdAt: "2026-02-01T16:00:00Z",
+    },
+    {
+      milestoneId: m2.id,
+      content: "Strong Week 2 session on psychographic profiling. We identified that the core customer is driven by sustainability as a lifestyle (not just trend), shops intentionally, and is willing to pay premium for certified materials. Shopping behavior: prefers DTC brands, influenced by editorial content more than social media advertising. This will inform our go-to-market and design briefs significantly. Key personality traits: intentional, quality-focused, minimalist aesthetics, career-oriented.",
+      createdBy: "Brandon Ellis",
+      createdAt: "2026-02-22T16:00:00Z",
+    },
+  ]).run();
+
+  // Document Templates
+  db.insert(documentTemplates).values([
+    {
+      name: "LEAA Mutual NDA",
+      category: "nda",
+      content: `MUTUAL NON-DISCLOSURE AGREEMENT\n\nThis Mutual Non-Disclosure Agreement ("Agreement") is entered into as of [DATE], by and between Lane Ellis Apparel Agency LLC ("LEAA") and [CLIENT NAME] d/b/a [BRAND NAME] ("Client").\n\n1. PURPOSE\nThe parties wish to explore a potential business relationship in connection with apparel design and development services ("Purpose").\n\n2. DEFINITION OF CONFIDENTIAL INFORMATION\n"Confidential Information" means any information disclosed by one party to the other that is designated as confidential or that reasonably should be understood to be confidential.\n\n3. OBLIGATIONS\nEach party agrees to hold the other party's Confidential Information in strict confidence and not to disclose such information to any third party without prior written consent.\n\n4. TERM\nThis Agreement shall remain in effect for three (3) years from the date first written above.\n\n5. GOVERNING LAW\nThis Agreement shall be governed by the laws of the State of Texas.`,
+      isActive: 1,
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+    {
+      name: "LEAA Mutual Release",
+      category: "mutual_release",
+      content: `MUTUAL RELEASE\n\nThis Mutual Release ("Release") is entered into as of [DATE], by and between Lane Ellis Apparel Agency LLC ("LEAA") and [CLIENT NAME] ("Client").\n\n1. RELEASE OF CLAIMS\nEach party, on behalf of itself and its successors and assigns, hereby releases and forever discharges the other party from any and all claims, demands, actions, causes of action, damages, and liabilities of any kind arising out of or relating to the services provided under the Service Agreement dated [SERVICE AGREEMENT DATE].\n\n2. CONSIDERATION\nThis Release is given in consideration of the mutual releases herein and other good and valuable consideration, the receipt of which is hereby acknowledged.\n\n3. ENTIRE AGREEMENT\nThis Release constitutes the entire agreement between the parties with respect to its subject matter.`,
+      isActive: 1,
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+    {
+      name: "LEAA Phase Sign-Off",
+      category: "phase_signoff",
+      content: `PHASE COMPLETION SIGN-OFF\n\nProject: [PROJECT NAME]\nPhase: [PHASE NAME]\nCompletion Date: [DATE]\n\nI, [CLIENT NAME], hereby acknowledge and confirm that:\n\n1. [PHASE NAME] has been completed to my satisfaction.\n2. I have received and reviewed all phase deliverables.\n3. I approve these deliverables and authorize LEAA to proceed to the next phase.\n4. I understand that proceeding constitutes my agreement that this phase work is complete and accepted.\n\nThis sign-off authorizes LEAA to begin scheduling the next phase and associated work.`,
+      isActive: 1,
+      createdAt: "2026-01-01T00:00:00Z",
+    },
+  ]).run();
 }
 
 seedAdminAccounts();
