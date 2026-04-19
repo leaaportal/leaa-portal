@@ -6,7 +6,7 @@ import {
   supportTickets, ticketReplies, resources, notifications, payments, sessions,
   approvals, sessionNotes, hourLogs, styles, materials, costSheets, legalDocuments, documentTemplates,
   adminNotifications, adminTasks,
-  clientOnboarding, onboardingProgress,
+  clientOnboarding,
   type User, type InsertUser,
   type Project, type InsertProject,
   type Milestone, type InsertMilestone,
@@ -30,7 +30,6 @@ import {
   type AdminNotification, type InsertAdminNotification,
   type AdminTask, type InsertAdminTask,
   type ClientOnboarding, type InsertClientOnboarding,
-  type OnboardingProgress,
 } from "@shared/schema";
 
 export interface IStorage {
@@ -137,20 +136,11 @@ export interface IStorage {
   updateAdminTask(id: number, data: Partial<InsertAdminTask>): AdminTask;
   getOverdueTaskCount(): number;
 
-  // Onboarding (client_onboarding legacy)
+  // Onboarding
   getOnboardingByUserId(userId: number): ClientOnboarding | undefined;
   createOnboarding(data: InsertClientOnboarding): ClientOnboarding;
   updateOnboardingStep(userId: number, step: number): void;
   completeOnboarding(userId: number, signatureText: string): ClientOnboarding;
-
-  // Onboarding Progress (new)
-  getOnboardingProgress(userId: number): OnboardingProgress[];
-  completeOnboardingStep(userId: number, step: string, data?: string): OnboardingProgress;
-  getOnboardingStatusForUser(userId: number): {
-    status: "not_started" | "in_progress" | "completed";
-    completedSteps: string[];
-    currentStep: string;
-  };
 
   // ===== ADMIN METHODS =====
   getAllClients(): User[];
@@ -468,22 +458,7 @@ sqlite.exec(`
     step5_viewed INTEGER NOT NULL DEFAULT 0,
     step6_completed INTEGER NOT NULL DEFAULT 0
   );
-
-  CREATE TABLE IF NOT EXISTS onboarding_progress (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    step TEXT NOT NULL,
-    completed_at TEXT NOT NULL,
-    data TEXT
-  );
 `);
-
-// Add onboarding_status column to users — idempotent
-try {
-  sqlite.exec(`ALTER TABLE users ADD COLUMN onboarding_status TEXT NOT NULL DEFAULT 'not_started'`);
-} catch {
-  // Column already exists — ignore
-}
 
 export class DatabaseStorage implements IStorage {
   getUserByEmail(email: string): User | undefined {
@@ -805,10 +780,7 @@ export class DatabaseStorage implements IStorage {
 
   completeOnboarding(userId: number, signatureText: string): ClientOnboarding {
     const now = new Date().toISOString();
-
-    // Update legacy client_onboarding record
-    const record = db
-      .update(clientOnboarding)
+    return db.update(clientOnboarding)
       .set({
         completedAt: now,
         signatureText,
@@ -818,124 +790,6 @@ export class DatabaseStorage implements IStorage {
       .where(eq(clientOnboarding.userId, userId))
       .returning()
       .get();
-
-    // Set onboarding_status = "completed" on users table
-    db.update(users)
-      .set({ onboardingStatus: "completed" })
-      .where(eq(users.id, userId))
-      .run();
-
-    // Create admin notification for completed onboarding
-    const user = db.select().from(users).where(eq(users.id, userId)).get();
-    if (user) {
-      db.insert(adminNotifications)
-        .values({
-          type: "onboarding_complete",
-          title: `Client onboarding complete: ${user.name}`,
-          message: `${user.name} (${user.brandName}) has completed the portal onboarding walkthrough and provided their digital sign-off.`,
-          clientName: user.name,
-          projectId: null,
-          relatedId: userId,
-          isRead: 0,
-          priority: "normal",
-          createdAt: now,
-        })
-        .run();
-    }
-
-    return record;
-  }
-
-  getOnboardingProgress(userId: number): OnboardingProgress[] {
-    return db
-      .select()
-      .from(onboardingProgress)
-      .where(eq(onboardingProgress.userId, userId))
-      .all();
-  }
-
-  completeOnboardingStep(
-    userId: number,
-    step: string,
-    data?: string
-  ): OnboardingProgress {
-    const now = new Date().toISOString();
-
-    // Upsert: delete existing record for this step first (idempotent)
-    db.delete(onboardingProgress)
-      .where(
-        and(
-          eq(onboardingProgress.userId, userId),
-          eq(onboardingProgress.step, step)
-        )
-      )
-      .run();
-
-    const record = db
-      .insert(onboardingProgress)
-      .values({ userId, step, completedAt: now, data: data ?? null })
-      .returning()
-      .get();
-
-    // Advance user onboarding_status to "in_progress" if not already completed
-    const user = db.select().from(users).where(eq(users.id, userId)).get();
-    if (user && user.onboardingStatus === "not_started") {
-      db.update(users)
-        .set({ onboardingStatus: "in_progress" })
-        .where(eq(users.id, userId))
-        .run();
-    }
-
-    // Also mark the legacy step flag on client_onboarding
-    const STEP_ORDER = [
-      "welcome",
-      "brand_profile",
-      "how_it_works",
-      "portal_tour",
-      "key_documents",
-      "signoff",
-    ];
-    const stepIndex = STEP_ORDER.indexOf(step) + 1; // 1-based
-    if (stepIndex > 0) {
-      this.updateOnboardingStep(userId, stepIndex);
-    }
-
-    return record;
-  }
-
-  getOnboardingStatusForUser(userId: number): {
-    status: "not_started" | "in_progress" | "completed";
-    completedSteps: string[];
-    currentStep: string;
-  } {
-    const STEP_ORDER = [
-      "welcome",
-      "brand_profile",
-      "how_it_works",
-      "portal_tour",
-      "key_documents",
-      "signoff",
-    ];
-
-    const user = db.select().from(users).where(eq(users.id, userId)).get();
-    const status = (user?.onboardingStatus ?? "not_started") as
-      | "not_started"
-      | "in_progress"
-      | "completed";
-
-    const progressRows = db
-      .select()
-      .from(onboardingProgress)
-      .where(eq(onboardingProgress.userId, userId))
-      .all();
-
-    const completedSteps = progressRows.map((r) => r.step);
-
-    // currentStep = first step not yet in completedSteps
-    const currentStep =
-      STEP_ORDER.find((s) => !completedSteps.includes(s)) ?? "signoff";
-
-    return { status, completedSteps, currentStep };
   }
 
   // ===== ADMIN METHODS =====
@@ -1979,6 +1833,126 @@ function seedDemoData() {
 
 seedAdminAccounts();
 seedDemoData();
+
+// Test client account
+function seedTestClient() {
+  const existing = storage.getUserByEmail("testclient@theleaagency.com");
+  if (existing) return;
+
+  const testUser = storage.createUser({
+    email: "testclient@theleaagency.com",
+    name: "Jordan Taylor",
+    brandName: "Taylor Made Apparel",
+    role: "client",
+    accessCode: "TEST2026",
+    onboardingStatus: "not_started",
+  });
+
+  // Create a project for the test client
+  const project = db.insert(projects).values({
+    userId: testUser.id,
+    name: "Taylor Made Apparel — Concept Development",
+    serviceType: "Concept Development 60-Day",
+    status: "active",
+    startDate: "2026-04-01",
+    endDate: "2026-05-31",
+    totalHours: 36,
+    totalCost: 2700,
+    paidAmount: 1350,
+    createdAt: new Date().toISOString(),
+  }).returning().get();
+
+  // Add milestones
+  const sessions = [
+    { num: 1, title: "Session 1: Understanding the Vision", desc: "Brand identity deep-dive, target market analysis, competitive positioning", hours: 9, cost: 675, status: "not_started" },
+    { num: 2, title: "Session 2: Customer Profile Development", desc: "Customer persona creation, market research, trend alignment", hours: 9, cost: 675, status: "not_started" },
+    { num: 3, title: "Session 3: Design Direction", desc: "Mood boards, fabric selection, silhouette development, tech pack drafting", hours: 9, cost: 675, status: "not_started" },
+    { num: 4, title: "Session 4: Final Presentation & Strategy", desc: "Complete collection presentation, production roadmap, launch strategy", hours: 9, cost: 675, status: "not_started" },
+  ];
+
+  for (const s of sessions) {
+    db.insert(milestones).values({
+      projectId: project.id,
+      sessionNumber: s.num,
+      title: s.title,
+      description: s.desc,
+      hours: s.hours,
+      cost: s.cost,
+      status: s.status,
+      startedAt: null,
+      completedAt: null,
+    }).run();
+  }
+
+  // Add legal documents
+  const now = new Date().toISOString();
+  db.insert(legalDocuments).values({
+    projectId: project.id,
+    userId: testUser.id,
+    templateName: "LEAA Mutual NDA",
+    title: "Mutual Non-Disclosure Agreement",
+    category: "nda",
+    content: `MUTUAL NON-DISCLOSURE AGREEMENT\n\nThis Mutual Non-Disclosure Agreement ("Agreement") is entered into as of April 1, 2026, by and between Lane Ellis Apparel Agency LLC ("LEAA") and Jordan Taylor d/b/a Taylor Made Apparel ("Client").\n\n1. PURPOSE\nThe parties wish to explore a potential business relationship in connection with apparel design and development services.\n\n2. CONFIDENTIAL INFORMATION\n"Confidential Information" means any information disclosed by one party to the other that is designated as confidential or that reasonably should be understood to be confidential.\n\n3. OBLIGATIONS\nEach party agrees to hold the other party's Confidential Information in strict confidence and not to disclose such information to any third party.\n\n4. TERM\nThis Agreement shall remain in effect for three (3) years from the date first written above.\n\n5. GOVERNING LAW\nThis Agreement shall be governed by the laws of the State of Texas.`,
+    status: "sent",
+    sentAt: now,
+    signedAt: null,
+    signedBy: null,
+    signatureText: null,
+    dueDate: "2026-04-15",
+    required: 1,
+    createdAt: now,
+  }).run();
+
+  db.insert(legalDocuments).values({
+    projectId: project.id,
+    userId: testUser.id,
+    templateName: "LEAA Service Agreement",
+    title: "Concept Development Service Agreement",
+    category: "service_agreement",
+    content: `SERVICE AGREEMENT\n\nThis Service Agreement is entered into as of April 1, 2026, by and between Lane Ellis Apparel Agency LLC ("LEAA") and Jordan Taylor d/b/a Taylor Made Apparel ("Client").\n\n1. SERVICES\nLEAA agrees to provide: 60-Day Concept Development Program, consisting of four structured sessions totaling 36 hours.\n\n2. COMPENSATION\nTotal fee: $2,700. 50% deposit ($1,350) due upon signing, 50% balance due upon completion of Session 3.\n\n3. DELIVERABLES\nBrand Brief, Mood Board, Customer Persona Deck, Competitive Analysis, Design Direction Document, Fabric & Color Palette, Tech Packs (up to 5 styles), and Client Pathway Proposal.\n\n4. INTELLECTUAL PROPERTY\nUpon full payment, all deliverables become Client property. LEAA retains general methodologies.\n\n5. REVISION POLICY\nOne round of revisions per deliverable. Additional revisions at $125/hour.`,
+    status: "sent",
+    sentAt: now,
+    signedAt: null,
+    signedBy: null,
+    signatureText: null,
+    dueDate: "2026-04-15",
+    required: 1,
+    createdAt: now,
+  }).run();
+}
+
+seedTestClient();
+
+function seedOnboardingData() {
+  // Mark Erin Okoye (demo user) as having completed onboarding
+  const demoUser = storage.getUserByEmail("demo@leaa.com");
+  if (!demoUser) return;
+
+  const existing = storage.getOnboardingByUserId(demoUser.id);
+  if (existing) return; // Already seeded
+
+  const now = new Date().toISOString();
+  db.insert(clientOnboarding).values({
+    userId: demoUser.id,
+    completedAt: now,
+    signatureText: "Erin Okoye",
+    signedAt: now,
+    step1Viewed: 1,
+    step2Viewed: 1,
+    step3Viewed: 1,
+    step4Viewed: 1,
+    step5Viewed: 1,
+    step6Completed: 1,
+  }).run();
+
+  // Set onboardingStatus to completed on users table
+  db.update(users)
+    .set({ onboardingStatus: "completed" })
+    .where(eq(users.id, demoUser.id))
+    .run();
+}
+
+seedOnboardingData();
 
 function seedPhaseAData() {
   // Check if already seeded
