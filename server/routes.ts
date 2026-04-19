@@ -75,111 +75,6 @@ export async function registerRoutes(server: Server, app: Express) {
     return res.json({ user: safeUser });
   });
 
-  // ── ONBOARDING ──────────────────────────────────────────────────────────────
-
-  // GET /api/onboarding/status
-  app.get("/api/onboarding/status", requireAuth, (req, res) => {
-    try {
-      const userId = (req.session as any).userId as number;
-      const statusData = storage.getOnboardingStatusForUser(userId);
-      return res.json(statusData);
-    } catch (e: any) {
-      return res.status(500).json({ message: e.message || "Server error" });
-    }
-  });
-
-  // POST /api/onboarding/complete-step
-  app.post("/api/onboarding/complete-step", requireAuth, (req, res) => {
-    try {
-      const userId = (req.session as any).userId as number;
-      const VALID_STEPS = [
-        "welcome",
-        "brand_profile",
-        "how_it_works",
-        "portal_tour",
-        "key_documents",
-        "signoff",
-      ];
-
-      const { step, data } = req.body as { step: string; data?: string };
-
-      if (!step || !VALID_STEPS.includes(step)) {
-        return res.status(400).json({
-          message: `Invalid step. Must be one of: ${VALID_STEPS.join(", ")}`,
-        });
-      }
-
-      // Ensure the onboarding record exists (create if first time)
-      const existing = storage.getOnboardingByUserId(userId);
-      if (!existing) {
-        storage.createOnboarding({
-          userId,
-          completedAt: null,
-          signatureText: null,
-          signedAt: null,
-          step1Viewed: 0,
-          step2Viewed: 0,
-          step3Viewed: 0,
-          step4Viewed: 0,
-          step5Viewed: 0,
-          step6Completed: 0,
-        });
-      }
-
-      storage.completeOnboardingStep(userId, step, data);
-      const statusData = storage.getOnboardingStatusForUser(userId);
-
-      return res.json({
-        ok: true,
-        completedSteps: statusData.completedSteps,
-        currentStep: statusData.currentStep,
-      });
-    } catch (e: any) {
-      return res.status(500).json({ message: e.message || "Server error" });
-    }
-  });
-
-  // POST /api/onboarding/complete
-  app.post("/api/onboarding/complete", requireAuth, (req, res) => {
-    try {
-      const userId = (req.session as any).userId as number;
-      const { signatureText } = req.body as { signatureText: string };
-
-      if (!signatureText || typeof signatureText !== "string" || !signatureText.trim()) {
-        return res.status(400).json({ message: "signatureText is required" });
-      }
-
-      // Ensure onboarding record exists
-      const existing = storage.getOnboardingByUserId(userId);
-      if (!existing) {
-        storage.createOnboarding({
-          userId,
-          completedAt: null,
-          signatureText: null,
-          signedAt: null,
-          step1Viewed: 1,
-          step2Viewed: 1,
-          step3Viewed: 1,
-          step4Viewed: 1,
-          step5Viewed: 1,
-          step6Completed: 0,
-        });
-      }
-
-      // Mark signoff step in progress table
-      storage.completeOnboardingStep(userId, "signoff", JSON.stringify({ signatureText }));
-
-      // Complete onboarding — sets completed_at, signature_text, onboarding_status
-      storage.completeOnboarding(userId, signatureText.trim());
-
-      return res.json({ ok: true });
-    } catch (e: any) {
-      return res.status(500).json({ message: e.message || "Server error" });
-    }
-  });
-
-  // ── END ONBOARDING ──────────────────────────────────────────────────────────
-
   // Projects
   app.get("/api/projects", requireAuth, (req, res) => {
     const userId = (req.session as any).userId;
@@ -1066,6 +961,30 @@ export async function registerRoutes(server: Server, app: Express) {
     }
   });
 
+  // Admin: Update document template
+  app.put("/api/admin/document-templates/:id", requireAdmin, (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { name, category, content } = req.body;
+      const updateData: Record<string, unknown> = {};
+      if (name !== undefined) updateData.name = name;
+      if (category !== undefined) updateData.category = category;
+      if (content !== undefined) updateData.content = content;
+      if (Object.keys(updateData).length === 0) return res.status(400).json({ message: "No fields to update" });
+      storage.updateDocumentTemplate(id, updateData as any);
+      return res.json({ success: true, id });
+    } catch (e: any) { return res.status(500).json({ message: e.message }); }
+  });
+
+  // Admin: Soft-delete document template
+  app.delete("/api/admin/document-templates/:id", requireAdmin, (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      storage.updateDocumentTemplate(id, { isActive: 0 } as any);
+      return res.json({ success: true, id });
+    } catch (e: any) { return res.status(500).json({ message: e.message }); }
+  });
+
   // Admin: Legal documents — get all, send to client
   app.get("/api/admin/documents", requireAdmin, (req, res) => {
     try {
@@ -1497,6 +1416,96 @@ export async function registerRoutes(server: Server, app: Express) {
     });
   });
 
+  // ===== ONBOARDING ROUTES =====
+
+  // GET /api/onboarding/status
+  app.get("/api/onboarding/status", requireAuth, (req, res) => {
+    const userId = (req.session as any).userId;
+    const record = storage.getOnboardingByUserId(userId);
+    return res.json(record || null);
+  });
+
+  // POST /api/onboarding/start
+  app.post("/api/onboarding/start", requireAuth, (req, res) => {
+    const userId = (req.session as any).userId;
+    const existing = storage.getOnboardingByUserId(userId);
+    if (existing) {
+      return res.json(existing);
+    }
+    const record = storage.createOnboarding({ userId });
+    return res.json(record);
+  });
+
+  // PATCH /api/onboarding/step/:step
+  app.patch("/api/onboarding/step/:step", requireAuth, (req, res) => {
+    const userId = (req.session as any).userId;
+    const step = parseInt(req.params.step);
+    if (isNaN(step) || step < 1 || step > 6) {
+      return res.status(400).json({ message: "Invalid step" });
+    }
+    storage.updateOnboardingStep(userId, step);
+    const record = storage.getOnboardingByUserId(userId);
+    return res.json(record);
+  });
+
+  // POST /api/onboarding/complete
+  app.post("/api/onboarding/complete", requireAuth, async (req, res) => {
+    const userId = (req.session as any).userId;
+    const { signatureText } = req.body;
+    if (!signatureText || typeof signatureText !== "string" || signatureText.trim().length === 0) {
+      return res.status(400).json({ message: "Signature is required" });
+    }
+
+    const record = storage.completeOnboarding(userId, signatureText.trim());
+    const user = storage.getUserById(userId);
+
+    if (user) {
+      // Create legal document record for onboarding acknowledgment
+      const projects = storage.getProjectsByUserId(userId);
+      const project = projects[0];
+      if (project) {
+        try {
+          storage.createLegalDocument({
+            projectId: project.id,
+            userId,
+            templateName: "portal_onboarding_acknowledgment",
+            title: "Portal Onboarding Acknowledgment",
+            category: "other",
+            content: `PORTAL ONBOARDING ACKNOWLEDGMENT\n\nClient: ${user.name}\nBrand: ${user.brandName}\nDate: ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}\n\nBy completing the LEAA Client Portal onboarding, ${user.name} acknowledges that they have:\n\n1. Reviewed and understood how the LEAA Client Portal operates\n2. Been introduced to the LEAA team and communication norms\n3. Reviewed the project development journey and session structure\n4. Familiarized themselves with all portal sections\n5. Understood their responsibilities as a LEAA client\n\nSignature: ${signatureText.trim()}\nSigned At: ${new Date().toISOString()}`,
+            status: "signed",
+            sentAt: new Date().toISOString(),
+            signedAt: new Date().toISOString(),
+            signedBy: user.name,
+            signatureText: signatureText.trim(),
+            required: 0,
+            createdAt: new Date().toISOString(),
+          });
+        } catch (e) {
+          // Non-fatal
+        }
+      }
+
+      // Create admin notification
+      try {
+        storage.createAdminNotification({
+          type: "onboarding_complete",
+          title: "Client Completed Onboarding",
+          message: `${user.name} completed portal onboarding`,
+          clientName: user.name,
+          projectId: projects[0]?.id || null,
+          relatedId: record.id,
+          isRead: 0,
+          priority: "normal",
+          createdAt: new Date().toISOString(),
+        });
+      } catch (e) {
+        // Non-fatal
+      }
+    }
+
+    return res.json(record);
+  });
+
   // ── CALENDAR EVENTS ───────────────────────────────────────────────────────
 
   app.get("/api/calendar/events", requireAuth, (req, res) => {
@@ -1504,12 +1513,17 @@ export async function registerRoutes(server: Server, app: Express) {
       const userId = (req.session as any).userId;
       const user = storage.getUserById(userId);
       if (!user) return res.status(401).json({ message: "User not found" });
+
       const isAdmin = user.role === "admin";
 
       let monthStr: string;
       const rawMonth = req.query.month as string | undefined;
-      if (rawMonth && /^\d{4}-\d{2}$/.test(rawMonth)) { monthStr = rawMonth; }
-      else { const now = new Date(); monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`; }
+      if (rawMonth && /^\d{4}-\d{2}$/.test(rawMonth)) {
+        monthStr = rawMonth;
+      } else {
+        const now = new Date();
+        monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      }
 
       const [year, month] = monthStr.split("-").map(Number);
       const monthStart = `${monthStr}-01`;
@@ -1521,84 +1535,175 @@ export async function registerRoutes(server: Server, app: Express) {
         const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
         return match ? match[1] : null;
       }
+
       function toTimeStr(raw: string | null | undefined): string | undefined {
         if (!raw) return undefined;
-        try { const d = new Date(raw); if (isNaN(d.getTime())) return undefined; let h = d.getHours(); const m = d.getMinutes(); const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12; return `${h}:${String(m).padStart(2, "0")} ${ap}`; } catch { return undefined; }
+        try {
+          const d = new Date(raw);
+          if (isNaN(d.getTime())) return undefined;
+          let hours = d.getHours();
+          const minutes = d.getMinutes();
+          const ampm = hours >= 12 ? "PM" : "AM";
+          hours = hours % 12 || 12;
+          return `${hours}:${String(minutes).padStart(2, "0")} ${ampm}`;
+        } catch { return undefined; }
       }
-      function inMonth(ds: string | null): boolean { return ds ? ds >= monthStart && ds <= monthEnd : false; }
 
-      const events: any[] = [];
-      const uc: Record<number, any> = {};
-      function gui(uid: number | null | undefined) { if (!uid) return undefined; if (!uc[uid]) { const u = storage.getUserById(uid); uc[uid] = u ? { name: u.name, brandName: u.brandName } : undefined; } return uc[uid]; }
+      function inMonth(dateStr: string | null): boolean {
+        if (!dateStr) return false;
+        return dateStr >= monthStart && dateStr <= monthEnd;
+      }
+
+      const events: Array<{ id: string; type: string; title: string; date: string; time?: string; clientName?: string; brandName?: string; status?: string; priority?: string }> = [];
+
+      const userCache: Record<number, { name: string; brandName: string } | undefined> = {};
+      function getUserInfo(uid: number | null | undefined) {
+        if (!uid) return undefined;
+        if (!userCache[uid]) {
+          const u = storage.getUserById(uid);
+          userCache[uid] = u ? { name: u.name, brandName: u.brandName } : undefined;
+        }
+        return userCache[uid];
+      }
 
       if (isAdmin) {
         const allClients = storage.getAllClients();
-        for (const c of allClients) {
-          for (const p of storage.getProjectsByUserId(c.id)) {
-            for (const s of storage.getSessionsByProjectId(p.id)) { const ds = toDateStr(s.scheduledAt); if (inMonth(ds)) events.push({ id: `session-${s.id}`, type: "session", title: s.title, date: ds, time: toTimeStr(s.scheduledAt), clientName: c.name, brandName: c.brandName, status: s.status }); }
-            for (const d of storage.getDeliverablesByProjectId(p.id)) { if (!d.uploadedAt) continue; const ds = toDateStr(d.uploadedAt); if (inMonth(ds)) events.push({ id: `del-${d.id}`, type: "deliverable", title: d.title, date: ds, clientName: c.name, brandName: c.brandName, status: d.fileStatus ?? "draft" }); }
+        for (const client of allClients) {
+          const clientProjects = storage.getProjectsByUserId(client.id);
+          for (const project of clientProjects) {
+            const projectSessions = storage.getSessionsByProjectId(project.id);
+            for (const s of projectSessions) {
+              const dateStr = toDateStr(s.scheduledAt);
+              if (!inMonth(dateStr)) continue;
+              events.push({ id: `session-${s.id}`, type: "session", title: s.title, date: dateStr!, time: toTimeStr(s.scheduledAt), clientName: client.name, brandName: client.brandName, status: s.status });
+            }
+            const deliverables = storage.getDeliverablesByProjectId(project.id);
+            for (const d of deliverables) {
+              if (!d.uploadedAt) continue;
+              const dateStr = toDateStr(d.uploadedAt);
+              if (!inMonth(dateStr)) continue;
+              events.push({ id: `deliverable-${d.id}`, type: "deliverable", title: d.title, date: dateStr!, clientName: client.name, brandName: client.brandName, status: d.fileStatus ?? "draft" });
+            }
           }
         }
-        for (const t of storage.getAdminTasks()) { if (!t.dueDate) continue; const ds = toDateStr(t.dueDate); if (!inMonth(ds)) continue; const fl = t.category === "follow_up" || t.category === "onboarding"; let cn, bn; if (t.userId) { const i = gui(t.userId); cn = i?.name; bn = i?.brandName; } else if (t.projectId) { const pr = storage.getProjectById(t.projectId); if (pr) { const i = gui(pr.userId); cn = i?.name; bn = i?.brandName; } } events.push({ id: `task-${t.id}`, type: fl ? "lead_followup" : "task", title: t.title, date: ds, clientName: cn, brandName: bn, status: t.status, priority: t.priority }); }
+        const allTasks = storage.getAdminTasks();
+        for (const t of allTasks) {
+          if (!t.dueDate) continue;
+          const dateStr = toDateStr(t.dueDate);
+          if (!inMonth(dateStr)) continue;
+          const isFollowup = t.category === "follow_up" || t.category === "onboarding";
+          let clientName: string | undefined;
+          let brandName: string | undefined;
+          if (t.userId) { const info = getUserInfo(t.userId); clientName = info?.name; brandName = info?.brandName; }
+          else if (t.projectId) { const proj = storage.getProjectById(t.projectId); if (proj) { const info = getUserInfo(proj.userId); clientName = info?.name; brandName = info?.brandName; } }
+          events.push({ id: `task-${t.id}`, type: isFollowup ? "lead_followup" : "task", title: t.title, date: dateStr!, clientName, brandName, status: t.status, priority: t.priority });
+        }
       } else {
-        const ups = storage.getProjectsByUserId(userId); if (!ups.length) return res.json({ events: [], month: monthStr }); const p = ups[0];
-        for (const s of storage.getSessionsByProjectId(p.id)) { const ds = toDateStr(s.scheduledAt); if (inMonth(ds)) events.push({ id: `session-${s.id}`, type: "session", title: s.title, date: ds, time: toTimeStr(s.scheduledAt), status: s.status }); }
-        for (const d of storage.getDeliverablesByProjectId(p.id)) { if (!d.uploadedAt) continue; const ds = toDateStr(d.uploadedAt); if (inMonth(ds)) events.push({ id: `del-${d.id}`, type: "deliverable", title: d.title, date: ds, status: d.fileStatus ?? "draft" }); }
-        for (const t of storage.getAdminTasks({ clientId: userId })) { if (!t.dueDate) continue; const ds = toDateStr(t.dueDate); if (!inMonth(ds)) continue; const fl = t.category === "follow_up" || t.category === "onboarding"; events.push({ id: `task-${t.id}`, type: fl ? "lead_followup" : "task", title: t.title, date: ds, status: t.status, priority: t.priority }); }
+        const userProjects = storage.getProjectsByUserId(userId);
+        if (userProjects.length === 0) return res.json({ events: [], month: monthStr });
+        const project = userProjects[0];
+        const projectSessions = storage.getSessionsByProjectId(project.id);
+        for (const s of projectSessions) {
+          const dateStr = toDateStr(s.scheduledAt);
+          if (!inMonth(dateStr)) continue;
+          events.push({ id: `session-${s.id}`, type: "session", title: s.title, date: dateStr!, time: toTimeStr(s.scheduledAt), status: s.status });
+        }
+        const deliverables = storage.getDeliverablesByProjectId(project.id);
+        for (const d of deliverables) {
+          if (!d.uploadedAt) continue;
+          const dateStr = toDateStr(d.uploadedAt);
+          if (!inMonth(dateStr)) continue;
+          events.push({ id: `deliverable-${d.id}`, type: "deliverable", title: d.title, date: dateStr!, status: d.fileStatus ?? "draft" });
+        }
+        const allTasks = storage.getAdminTasks({ clientId: userId });
+        for (const t of allTasks) {
+          if (!t.dueDate) continue;
+          const dateStr = toDateStr(t.dueDate);
+          if (!inMonth(dateStr)) continue;
+          const isFollowup = t.category === "follow_up" || t.category === "onboarding";
+          events.push({ id: `task-${t.id}`, type: isFollowup ? "lead_followup" : "task", title: t.title, date: dateStr!, status: t.status, priority: t.priority });
+        }
       }
+
       events.sort((a, b) => a.date.localeCompare(b.date));
       return res.json({ events, month: monthStr });
-    } catch (e: any) { return res.status(500).json({ message: e.message || "Server error" }); }
+    } catch (e: any) {
+      return res.status(500).json({ message: e.message || "Internal server error" });
+    }
   });
 
-  // ── PROJECT TRACKER ─────────────────────────────────────────────────────
+  // ── PROJECT TRACKER ─────────────────────────────────────────────────────────
 
   app.get("/api/projects/:id/tracker", requireAuth, (req, res) => {
     const projectId = parseInt(req.params.id);
     const project = storage.getProjectById(projectId);
     if (!project) return res.status(404).json({ message: "Project not found" });
+
     const userId = (req.session as any).userId;
     const userObj = storage.getUserById(userId);
     if (!userObj) return res.status(401).json({ message: "User not found" });
-    if (userObj.role !== "admin") { const up = storage.getProjectsByUserId(userId); if (!up.find(p => p.id === projectId)) return res.status(403).json({ message: "Forbidden" }); }
+    if (userObj.role !== "admin") {
+      const userProjects = storage.getProjectsByUserId(userId);
+      if (!userProjects.find((p) => p.id === projectId)) return res.status(403).json({ message: "Forbidden" });
+    }
 
     const ms = storage.getMilestonesByProjectId(projectId);
-    const enriched = ms.map(m => ({ ...m, subMilestones: storage.getSubMilestonesByMilestoneId(m.id), deliverables: storage.getDeliverablesByMilestoneId(m.id) }));
+    const enriched = ms.map((m) => ({ ...m, subMilestones: storage.getSubMilestonesByMilestoneId(m.id), deliverables: storage.getDeliverablesByMilestoneId(m.id) }));
+
     const today = new Date();
     const startDate = project.startDate ? new Date(project.startDate) : today;
     const endDate = project.endDate ? new Date(project.endDate) : null;
-    const D = 86400000;
-    const totalDays = endDate ? Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / D)) : 60;
-    const daysElapsed = Math.max(0, Math.round((today.getTime() - startDate.getTime()) / D));
+    const msInDay = 86400000;
+    const totalDays = endDate ? Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / msInDay)) : 60;
+    const daysElapsed = Math.max(0, Math.round((today.getTime() - startDate.getTime()) / msInDay));
     const daysRemaining = Math.max(0, totalDays - daysElapsed);
     const percentElapsed = Math.min(100, Math.round((daysElapsed / totalDays) * 100));
+    const isOverdue = daysElapsed > totalDays;
 
-    let totalSubs = 0, completedSubs = 0, delReady = 0, delTotal = 0, pendApp = 0;
-    enriched.forEach(m => { totalSubs += m.subMilestones.length; completedSubs += m.subMilestones.filter(s => s.status === "completed").length; delTotal += m.deliverables.length; delReady += m.deliverables.filter(d => d.fileUrl).length; });
-    const overallPercent = totalSubs > 0 ? Math.round((completedSubs / totalSubs) * 100) : 0;
-    try { pendApp = storage.getApprovalsByProjectId(projectId).filter((a: any) => a.status === "pending").length; } catch { pendApp = 0; }
-
-    const cur = enriched.find(m => m.status === "in_progress");
-    const ppd = Math.round(totalDays / Math.max(1, enriched.length));
-    const phases = enriched.map(m => {
-      let da: number | null = null;
-      if (m.status === "completed" && m.startedAt && m.completedAt) da = Math.max(1, Math.round((new Date(m.completedAt).getTime() - new Date(m.startedAt).getTime()) / D));
-      else if (m.status === "in_progress" && m.startedAt) da = Math.max(1, Math.round((today.getTime() - new Date(m.startedAt).getTime()) / D));
-      return { name: m.title, status: m.status, startedAt: m.startedAt ?? null, completedAt: m.completedAt ?? null, daysPlanned: ppd, daysActual: da };
+    const milestonesCompleted = enriched.filter((m) => m.status === "completed").length;
+    const milestonesTotal = enriched.length;
+    let totalSubs = 0; let completedSubs = 0; let deliverablesReady = 0; let deliverablesTotal = 0; let pendingApprovals = 0;
+    enriched.forEach((m) => {
+      totalSubs += m.subMilestones.length;
+      completedSubs += m.subMilestones.filter((s) => s.status === "completed").length;
+      deliverablesTotal += m.deliverables.length;
+      deliverablesReady += m.deliverables.filter((d) => d.fileUrl).length;
     });
-    const delays = phases.filter(p => p.daysActual !== null && p.daysActual > p.daysPlanned * 1.25).map(p => ({ phase: p.name, plannedDays: p.daysPlanned, actualDays: p.daysActual as number, delayDays: (p.daysActual as number) - p.daysPlanned, reason: p.status === "in_progress" ? "In progress — exceeding planned window" : "Completed late" }));
+    const overallPercent = totalSubs > 0 ? Math.round((completedSubs / totalSubs) * 100) : 0;
+    try { pendingApprovals = storage.getApprovalsByProjectId(projectId).filter((a: any) => a.status === "pending").length; } catch { pendingApprovals = 0; }
 
-    let est: string | null = null;
-    if (overallPercent > 0 && overallPercent < 100) { est = new Date(startDate.getTime() + Math.round((daysElapsed / overallPercent) * 100) * D).toISOString().split("T")[0]; }
-    else if (overallPercent === 100) est = today.toISOString().split("T")[0];
-    else if (endDate) est = project.endDate ?? null;
+    const currentMilestone = enriched.find((m) => m.status === "in_progress");
+    const plannedDaysPerPhase = Math.round(totalDays / Math.max(1, milestonesTotal));
+
+    const phases = enriched.map((m) => {
+      let daysActual: number | null = null;
+      if (m.status === "completed" && m.startedAt && m.completedAt) {
+        daysActual = Math.max(1, Math.round((new Date(m.completedAt).getTime() - new Date(m.startedAt).getTime()) / msInDay));
+      } else if (m.status === "in_progress" && m.startedAt) {
+        daysActual = Math.max(1, Math.round((today.getTime() - new Date(m.startedAt).getTime()) / msInDay));
+      }
+      return { name: m.title, status: m.status, startedAt: m.startedAt ?? null, completedAt: m.completedAt ?? null, daysPlanned: plannedDaysPerPhase, daysActual };
+    });
+
+    const delays = phases.filter((p) => p.daysActual !== null && p.daysActual > p.daysPlanned * 1.25).map((p) => ({
+      phase: p.name, plannedDays: p.daysPlanned, actualDays: p.daysActual as number, delayDays: (p.daysActual as number) - p.daysPlanned,
+      reason: p.status === "in_progress" ? "In progress — exceeding planned window" : "Completed late",
+    }));
+
+    let estimatedCompletion: string | null = null;
+    if (overallPercent > 0 && overallPercent < 100) {
+      const estDate = new Date(startDate.getTime() + Math.round((daysElapsed / overallPercent) * 100) * msInDay);
+      estimatedCompletion = estDate.toISOString().split("T")[0];
+    } else if (overallPercent === 100) { estimatedCompletion = today.toISOString().split("T")[0]; }
+    else if (endDate) { estimatedCompletion = project.endDate ?? null; }
 
     return res.json({
       project: { name: project.name, serviceType: project.serviceType, startDate: project.startDate, endDate: project.endDate ?? null, status: project.status },
-      timeline: { totalDays, daysElapsed, daysRemaining, percentElapsed, isOverdue: daysElapsed > totalDays, estimatedCompletion: est },
-      progress: { overallPercent, sessionsCompleted: enriched.filter(m => m.status === "completed").length, sessionsTotal: enriched.length, currentSession: cur?.title ?? null, milestonesCompleted: enriched.filter(m => m.status === "completed").length, milestonesTotal: enriched.length, deliverablesReady: delReady, deliverablesTotal: delTotal, pendingApprovals: pendApp, pendingDocuments: 0 },
-      phases, delays,
+      timeline: { totalDays, daysElapsed, daysRemaining, percentElapsed, isOverdue, estimatedCompletion },
+      progress: { overallPercent, sessionsCompleted: milestonesCompleted, sessionsTotal: milestonesTotal, currentSession: currentMilestone?.title ?? null, milestonesCompleted, milestonesTotal, deliverablesReady, deliverablesTotal, pendingApprovals, pendingDocuments: 0 },
+      phases,
+      delays,
     });
   });
-
 }
+

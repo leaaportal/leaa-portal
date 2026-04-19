@@ -122,6 +122,7 @@ export interface IStorage {
   getAllDocumentTemplates(): DocumentTemplate[];
   getDocumentTemplateById(id: number): DocumentTemplate | undefined;
   createDocumentTemplate(data: InsertDocumentTemplate): DocumentTemplate;
+  updateDocumentTemplate(id: number, data: Partial<InsertDocumentTemplate>): void;
 
   // Admin Notifications
   getAdminNotifications(filter?: { isRead?: boolean; type?: string }): AdminNotification[];
@@ -695,6 +696,10 @@ export class DatabaseStorage implements IStorage {
 
   createDocumentTemplate(data: InsertDocumentTemplate): DocumentTemplate {
     return db.insert(documentTemplates).values(data).returning().get();
+  }
+
+  updateDocumentTemplate(id: number, data: Partial<InsertDocumentTemplate>): void {
+    db.update(documentTemplates).set(data as any).where(eq(documentTemplates.id, id)).run();
   }
 
   // Admin Notifications
@@ -2267,4 +2272,443 @@ function seedPhaseAData() {
 }
 
 seedPhaseAData();
+
+// Seed all 7 legal templates
+function seedLegalTemplates() {
+  const existing = storage.getAllDocumentTemplates();
+  // Only seed if we have the original 3 or fewer
+  if (existing.length > 3) return;
+
+  const now = new Date().toISOString();
+  const templates = [
+    {
+      name: "Master Service Agreement",
+      category: "service_agreement",
+      content: `LANE ELLIS APPAREL AGENCY
+MASTER SERVICE AGREEMENT
+
+Document Number: MSA-[XXXXX]
+Effective Date: [DATE]
+
+PARTIES
+
+This Master Service Agreement ("Agreement") is entered into as of the Effective Date above by and between:
+
+Lane Ellis Apparel Agency LLC ("LEAA"), an Illinois limited liability company with its principal place of business in Chicago, Illinois, reachable at info@laneellisapparelagency.com
+
+and
+
+[CLIENT LEGAL NAME] ("Client"), a [individual / LLC / corporation / other entity type] with its principal place of business at [CLIENT ADDRESS].
+
+LEAA and Client are each referred to herein individually as a "Party" and collectively as the "Parties."
+
+RECITALS
+
+WHEREAS, LEAA provides professional apparel development, design, pattern engineering, sourcing, production management, brand coaching, and related consulting services;
+
+WHEREAS, Client desires to engage LEAA to perform certain services, and LEAA desires to perform such services, on the terms and conditions set forth in this Agreement;
+
+NOW, THEREFORE, in consideration of the mutual promises contained herein and other good and valuable consideration, the receipt and sufficiency of which are hereby acknowledged, the Parties agree as follows:
+
+SECTION 1 — DEFINITIONS
+
+1.1 "Services" means the apparel development, design, consulting, and related services described in one or more Service Orders executed by the Parties.
+
+1.2 "Service Order" means a written addendum or order form, signed by both Parties, that specifies the particular services, deliverables, timeline, and fees for a defined engagement.
+
+1.3 "Deliverables" means the work product, designs, technical packages, patterns, documents, and other tangible or digital outputs produced by LEAA specifically for Client under an applicable Service Order.
+
+1.4 "Work Product" means any and all creative or technical output created by LEAA in the course of performing Services.
+
+1.5 "LEAA Proprietary Methods" means LEAA's internally developed frameworks, methodologies, tools, processes, templates, and systems.
+
+1.6 "Confidential Information" has the meaning set forth in Section 7.
+
+SECTION 2 — SCOPE OF SERVICES
+
+2.1 Service Orders. LEAA will provide Services as described in each Service Order executed by both Parties.
+
+2.2 Changes to Scope. Any material change to the scope of Services must be agreed to in a written change order signed by both Parties.
+
+2.3 Cooperation. Client agrees to provide LEAA with timely access to brand materials, feedback, approvals, and any other information reasonably necessary for LEAA to perform the Services.
+
+SECTION 3 — TERM AND RENEWAL
+
+3.1 Initial Term. This Agreement commences on the Effective Date and continues for an initial term of [12 months / as specified in the applicable Service Order].
+
+3.2 Automatic Renewal. This Agreement will automatically renew for successive one-month periods unless either Party provides written notice of non-renewal at least thirty (30) days before the end of the then-current term.
+
+SECTION 4 — FEES AND PAYMENT
+
+4.1 Fees. Client will pay LEAA the fees set forth in the applicable Service Order(s).
+
+4.2 Payment Terms. Unless otherwise stated in a Service Order, all invoices are due within fifteen (15) days of the invoice date.
+
+4.3 Late Payment. Overdue balances accrue interest at the rate of 1.5% per month.
+
+SECTION 5 — INTELLECTUAL PROPERTY
+
+5.1 Client Ownership of Deliverables. Upon receipt of full and final payment, all Deliverables created specifically for Client shall be assigned to and become the sole property of Client.
+
+5.2 LEAA Retains Proprietary Methods. LEAA retains all rights, title, and interest in and to LEAA Proprietary Methods.
+
+SECTION 6 — CONFIDENTIALITY
+
+6.1 Each Party agrees to maintain the confidentiality of the other Party's Confidential Information.
+
+SECTION 7 — LIMITATION OF LIABILITY
+
+7.1 LEAA's total aggregate liability shall not exceed the total fees actually paid by Client under the applicable Service Order.
+
+SECTION 8 — TERMINATION
+
+8.1 Either Party may terminate this Agreement for material breach by providing written notice to the other Party.
+
+SECTION 9 — GOVERNING LAW
+
+This Agreement shall be governed by and construed in accordance with the laws of the State of Illinois.
+
+SIGNATURE PAGE
+
+LANE ELLIS APPAREL AGENCY LLC
+
+By: ________________________
+Name: [LEAA REPRESENTATIVE]
+Title: [TITLE]
+Date: [DATE]
+
+CLIENT
+
+By: ________________________
+Name: [CLIENT NAME]
+Title: [TITLE]
+Date: [DATE]`,
+    },
+    {
+      name: "Service Order — Monthly Retainer",
+      category: "service_order",
+      content: `LANE ELLIS APPAREL AGENCY
+SERVICE ORDER — MONTHLY RETAINER
+
+Document Number: SO-RET-[XXXXX]
+Effective Date: [DATE]
+Master Agreement Reference: MSA-[XXXXX]
+
+CLIENT INFORMATION
+
+Client Name: [CLIENT NAME]
+Brand Name: [BRAND NAME]
+Contact Email: [CLIENT EMAIL]
+Contact Phone: [CLIENT PHONE]
+
+PACKAGE SELECTION
+
+[ ] 5-Hour Retainer — $675/month
+[ ] 10-Hour Retainer — $1,350/month
+[ ] 20-Hour Retainer — $2,700/month
+
+ENGAGEMENT DETAILS
+
+Start Date: [START DATE]
+Billing Cycle: Monthly, invoiced on the 1st
+Payment Due: Within 15 days of invoice date
+Initial Term: [3 / 6 / 12] months
+
+INCLUDED SERVICES
+
+- Ongoing design consultation and creative direction
+- Technical package development and revisions
+- Fabric sourcing support and vendor coordination
+- Production planning and timeline management
+- Brand strategy and market positioning guidance
+- Access to LEAA Client Portal with milestone tracking
+
+OVERAGE HOURS
+
+Hours exceeding the retainer package will be billed at $135/hour, invoiced monthly.
+
+SIGNATURES
+
+LANE ELLIS APPAREL AGENCY LLC
+
+By: ________________________
+Name: [LEAA REPRESENTATIVE]
+Date: [DATE]
+
+CLIENT
+
+By: ________________________
+Name: [CLIENT NAME]
+Date: [DATE]`,
+    },
+    {
+      name: "Service Order — Concept Development 60-Day",
+      category: "service_order",
+      content: `LANE ELLIS APPAREL AGENCY
+SERVICE ORDER — CONCEPT DEVELOPMENT 60-DAY INTENSIVE
+
+Document Number: SO-CD-[XXXXX]
+Effective Date: [DATE]
+Master Agreement Reference: MSA-[XXXXX]
+
+CLIENT INFORMATION
+
+Client Name: [CLIENT NAME]
+Brand Name: [BRAND NAME]
+Contact Email: [CLIENT EMAIL]
+
+PROGRAM OVERVIEW
+
+Service: Concept Development 60-Day Intensive
+Total Hours: 36 hours across 4 structured sessions
+Total Fee: $2,700
+Duration: 60 calendar days from start date
+
+PAYMENT SCHEDULE
+
+Deposit (50%): $1,350 — due upon signing
+Balance (50%): $1,350 — due upon completion of Session 3
+
+SESSION MILESTONE SCHEDULE
+
+Session 1 — Understanding the Vision (Days 1-15)
+- Brand identity deep-dive and target market analysis
+- Competitive positioning review
+- Deliverables: Brand Brief, Initial Mood Board
+
+Session 2 — Customer Profile Development (Days 16-30)
+- Customer persona creation and market research
+- Trend alignment and pricing strategy
+- Deliverables: Customer Persona Deck, Market Analysis
+
+Session 3 — Design & Fabric Selection (Days 31-45)
+- Mood board refinement, fabric sourcing
+- Silhouette development, tech pack drafting
+- Deliverables: Design Direction Document, Fabric Selections
+
+Session 4 — Final Presentation (Days 46-60)
+- Complete collection presentation
+- Production roadmap and launch strategy
+- Deliverables: Tech Packs (up to 5 styles), LEAA Client Pathway Proposal
+
+CLIENT RESPONSIBILITIES
+
+- Attend all scheduled sessions
+- Provide feedback within 48 hours of deliverable submission
+- Supply brand materials as requested
+- Complete all approval sign-offs at milestone gates
+
+SIGNATURES
+
+LANE ELLIS APPAREL AGENCY LLC
+
+By: ________________________
+Name: [LEAA REPRESENTATIVE]
+Date: [DATE]
+
+CLIENT
+
+By: ________________________
+Name: [CLIENT NAME]
+Date: [DATE]`,
+    },
+    {
+      name: "Client Onboarding Agreement Checklist",
+      category: "onboarding_checklist",
+      content: `LANE ELLIS APPAREL AGENCY
+CLIENT ONBOARDING AGREEMENT CHECKLIST
+
+Client Name: [CLIENT NAME]
+Brand Name: [BRAND NAME]
+Date: [DATE]
+Onboarded By: [LEAA REPRESENTATIVE]
+
+SECTION A — LEGAL AGREEMENTS
+
+[ ] Master Service Agreement (MSA) — signed
+[ ] Applicable Service Order — signed
+[ ] Mutual Non-Disclosure Agreement (NDA) — signed
+[ ] Portfolio Release / Testimonial Consent — reviewed
+
+SECTION B — PAYMENTS
+
+[ ] Deposit invoice sent
+[ ] Deposit payment received
+[ ] Payment method on file
+
+SECTION C — BRAND MATERIALS
+
+[ ] Brand name and logo files received
+[ ] Brand guidelines or style references received
+[ ] Target audience / customer profile provided
+[ ] Inspiration images or mood board references provided
+[ ] Existing product samples or tech packs (if applicable)
+
+SECTION D — CONTACT & COMMUNICATION SETUP
+
+[ ] Primary contact confirmed
+[ ] Email verified
+[ ] Portal access credentials sent
+[ ] Welcome email sent
+[ ] Kickoff session scheduled
+
+SECTION E — PORTAL & PROJECT SETUP
+
+[ ] Client account created in portal
+[ ] Project created with milestones
+[ ] Legal documents uploaded
+[ ] Resource library access confirmed
+
+ONBOARDING COMPLETION SIGN-OFF
+
+I confirm that all onboarding steps have been completed.
+
+Client Signature: ________________________
+Date: [DATE]
+
+LEAA Representative: ________________________
+Date: [DATE]`,
+    },
+    {
+      name: "Portfolio Release / Testimonial Consent",
+      category: "portfolio_release",
+      content: `LANE ELLIS APPAREL AGENCY
+PORTFOLIO RELEASE / TESTIMONIAL CONSENT
+
+Date: [DATE]
+
+PARTIES
+
+Lane Ellis Apparel Agency LLC ("LEAA")
+[CLIENT LEGAL NAME] ("Client")
+
+INTRODUCTION
+
+This Portfolio Release and Testimonial Consent authorizes LEAA to use certain materials related to the Client's project for LEAA's marketing, portfolio, and promotional purposes.
+
+AUTHORIZATION OPTIONS
+
+[ ] FULL PORTFOLIO RELEASE — Client authorizes LEAA to use project images, descriptions, and deliverable samples in LEAA's portfolio, website, social media, and marketing materials.
+
+[ ] LIMITED PORTFOLIO RELEASE — Client authorizes LEAA to use project materials with the following restrictions: [SPECIFY RESTRICTIONS]
+
+[ ] DECLINE — Client declines portfolio release at this time.
+
+TESTIMONIAL CONSENT (Optional)
+
+[ ] Client consents to LEAA using the following testimonial:
+
+"[TESTIMONIAL TEXT]"
+
+— [CLIENT NAME], [BRAND NAME]
+
+SCOPE AND LIMITATIONS
+
+- LEAA will not disclose proprietary design details, pricing, or financial terms
+- Client may request removal of portfolio materials with 30 days written notice
+- This consent does not transfer any intellectual property rights
+
+RIGHT TO REVOKE
+
+Client may revoke this consent at any time by providing written notice to LEAA at info@laneellisapparelagency.com.
+
+SIGNATURES
+
+Client: ________________________
+Name: [CLIENT NAME]
+Date: [DATE]
+
+LEAA: ________________________
+Name: [LEAA REPRESENTATIVE]
+Date: [DATE]`,
+    },
+    {
+      name: "Independent Contractor Agreement",
+      category: "contractor_agreement",
+      content: `LANE ELLIS APPAREL AGENCY
+INDEPENDENT CONTRACTOR AGREEMENT
+
+Effective Date: [DATE]
+
+PARTIES
+
+Lane Ellis Apparel Agency LLC ("LEAA")
+[CONTRACTOR NAME] ("Contractor")
+Address: [CONTRACTOR ADDRESS]
+
+RECITALS
+
+LEAA engages independent contractors to perform specialized services. Contractor possesses skills and expertise that LEAA desires to engage for specific projects.
+
+SECTION 1 — SCOPE OF WORK
+
+Contractor will perform the following services:
+[DESCRIBE SERVICES]
+
+Project/Client Assignment: [PROJECT NAME]
+Estimated Duration: [DURATION]
+Deliverables: [LIST DELIVERABLES]
+
+SECTION 2 — PAYMENT
+
+Rate: $[RATE] per [hour / project / deliverable]
+Payment Schedule: [NET 15 / upon completion / milestone-based]
+Invoicing: Contractor will submit invoices to LEAA at info@laneellisapparelagency.com
+
+SECTION 3 — INDEPENDENT CONTRACTOR STATUS
+
+Contractor is an independent contractor, not an employee of LEAA. Contractor is responsible for their own taxes, insurance, and benefits.
+
+SECTION 4 — INTELLECTUAL PROPERTY ASSIGNMENT
+
+All work product created by Contractor in the course of performing services shall be considered "work made for hire" and shall be the sole property of LEAA (or LEAA's client, as applicable).
+
+SECTION 5 — CONFIDENTIALITY
+
+Contractor agrees to maintain the confidentiality of all client information, design files, business strategies, and proprietary methods of LEAA.
+
+SECTION 6 — NON-COMPETE AND NON-SOLICITATION
+
+During the term of this Agreement and for twelve (12) months thereafter, Contractor shall not directly solicit or engage LEAA clients for competing services.
+
+SECTION 7 — TERMINATION
+
+Either party may terminate this Agreement with fourteen (14) days written notice. Contractor will be compensated for work completed through the termination date.
+
+SECTION 8 — GOVERNING LAW
+
+This Agreement shall be governed by the laws of the State of Illinois.
+
+SIGNATURES
+
+LANE ELLIS APPAREL AGENCY LLC
+
+By: ________________________
+Name: [LEAA REPRESENTATIVE]
+Title: [TITLE]
+Date: [DATE]
+
+CONTRACTOR
+
+By: ________________________
+Name: [CONTRACTOR NAME]
+Date: [DATE]`,
+    },
+  ];
+
+  for (const t of templates) {
+    // Check if this template already exists by name
+    const exists = existing.find(e => e.name === t.name);
+    if (exists) continue;
+    storage.createDocumentTemplate({
+      name: t.name,
+      category: t.category,
+      content: t.content,
+      isActive: 1,
+      createdAt: now,
+    });
+  }
+}
+
+seedLegalTemplates();
 

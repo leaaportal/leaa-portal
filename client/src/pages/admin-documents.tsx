@@ -1,11 +1,42 @@
+/**
+ * LEAA Portal — Admin Documents Page
+ * Replaces: client/src/pages/admin-documents.tsx
+ *
+ * Three tabs:
+ *  1. Sent Documents  — table of all docs sent to clients
+ *  2. Master Templates — card grid with full-screen editor
+ *  3. Send Document   — step-by-step wizard to send a template to a client
+ */
+
+import { useState, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
 import { apiRequest } from "@/lib/queryClient";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  TabsContent,
+} from "@/components/ui/tabs";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardContent,
+  CardFooter,
+  CardDescription,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -14,377 +45,1362 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useToast } from "@/hooks/use-toast";
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from "@/components/ui/collapsible";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Separator } from "@/components/ui/separator";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  FileText,
-  Plus,
-  CheckCircle2,
-  Clock,
-  AlertCircle,
-  Eye,
-  Send,
-  User,
-  BookOpen,
-} from "lucide-react";
-import { format, parseISO } from "date-fns";
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog";
 
-interface LegalDoc {
-  id: number;
-  title: string;
-  category: string;
-  status: string;
-  sentAt: string | null;
-  signedAt: string | null;
-  signedBy: string | null;
-  dueDate: string | null;
-  required: number;
-  createdAt: string;
-  client: { id: number; name: string; brandName: string };
-  project: { id: number; name: string };
+// ─── Brand tokens ────────────────────────────────────────────────────────────
+const BRAND = {
+  charcoal: "#2D2F36",
+  sand: "#D9C9B6",
+  ivory: "#F7F4EF",
+  terracotta: "#B7542E",
+};
+
+// ─── Category options ─────────────────────────────────────────────────────────
+const CATEGORIES: { value: string; label: string }[] = [
+  { value: "nda", label: "Mutual NDA" },
+  { value: "service_agreement", label: "Service Agreement" },
+  { value: "mutual_release", label: "Mutual Release" },
+  { value: "phase_signoff", label: "Phase Sign-Off" },
+  { value: "ip_assignment", label: "IP Assignment" },
+  { value: "portfolio_release", label: "Portfolio Release" },
+  { value: "contractor_agreement", label: "Contractor Agreement" },
+  { value: "service_order", label: "Service Order" },
+  { value: "onboarding_checklist", label: "Onboarding Checklist" },
+  { value: "other", label: "Other" },
+];
+
+// ─── Placeholder chips ────────────────────────────────────────────────────────
+const PLACEHOLDERS = [
+  "[CLIENT NAME]",
+  "[CLIENT LEGAL NAME]",
+  "[CLIENT ADDRESS]",
+  "[DATE]",
+  "[PROJECT NAME]",
+  "[SERVICE TYPE]",
+  "[TOTAL FEE]",
+  "[DEPOSIT AMOUNT]",
+  "[BRAND NAME]",
+  "[CONTRACTOR NAME]",
+];
+
+// ─── Status badge ─────────────────────────────────────────────────────────────
+function StatusBadge({ status }: { status: string }) {
+  const map: Record<string, { label: string; style: React.CSSProperties }> = {
+    pending: { label: "Pending", style: { backgroundColor: "#D97706", color: "#fff" } },
+    sent: { label: "Sent", style: { backgroundColor: "#2563EB", color: "#fff" } },
+    viewed: { label: "Viewed", style: { backgroundColor: "#7C3AED", color: "#fff" } },
+    signed: { label: "Signed", style: { backgroundColor: "#059669", color: "#fff" } },
+  };
+  const cfg = map[status?.toLowerCase()] ?? { label: status ?? "Unknown", style: { backgroundColor: "#6B7280", color: "#fff" } };
+  return (
+    <span
+      className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold"
+      style={cfg.style}
+    >
+      {cfg.label}
+    </span>
+  );
 }
 
-interface DocTemplate {
+// ─── Category badge ───────────────────────────────────────────────────────────
+function CategoryBadge({ category }: { category: string }) {
+  const label = CATEGORIES.find((c) => c.value === category)?.label ?? category;
+  return (
+    <span
+      className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border"
+      style={{ borderColor: BRAND.sand, color: BRAND.charcoal, backgroundColor: BRAND.ivory }}
+    >
+      {label}
+    </span>
+  );
+}
+
+// ─── Date formatter ───────────────────────────────────────────────────────────
+function fmt(dateStr?: string | null) {
+  if (!dateStr) return "—";
+  try {
+    return new Date(dateStr).toLocaleDateString("en-US", {
+      year: "numeric", month: "short", day: "numeric",
+    });
+  } catch {
+    return dateStr;
+  }
+}
+
+function todayFormatted() {
+  return new Date().toLocaleDateString("en-US", {
+    year: "numeric", month: "long", day: "numeric",
+  });
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface Template {
   id: number;
   name: string;
   category: string;
   content: string;
-  isActive: number;
-  createdAt: string;
+  isActive?: number;
+  createdAt?: string;
 }
 
-const statusColors: Record<string, string> = {
-  pending: "bg-muted text-muted-foreground",
-  sent: "bg-yellow-100 text-yellow-700",
-  viewed: "bg-blue-100 text-blue-700",
-  signed: "bg-green-100 text-green-700",
-  expired: "bg-red-100 text-red-700",
-};
+interface SentDocument {
+  id: number;
+  title: string;
+  category?: string;
+  status: string;
+  content?: string;
+  sentDate?: string;
+  signedDate?: string;
+  dueDate?: string;
+  userId?: number;
+  projectId?: number;
+  required?: boolean;
+  signatureData?: string;
+}
 
-const categoryLabels: Record<string, string> = {
-  nda: "NDA",
-  service_agreement: "Service Agreement",
-  mutual_release: "Mutual Release",
-  phase_signoff: "Phase Sign-Off",
-  design_approval: "Design Approval",
-  ip_assignment: "IP Assignment",
-  other: "Other",
-};
+interface Client {
+  id: number;
+  name?: string;
+  email?: string;
+  brandName?: string;
+  projectName?: string;
+  company?: string;
+}
 
-export default function AdminDocumentsPage() {
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const [sendOpen, setSendOpen] = useState(false);
-  const [viewDoc, setViewDoc] = useState<LegalDoc | null>(null);
+// ─── Template Editor Dialog ───────────────────────────────────────────────────
+interface TemplateEditorProps {
+  template: Partial<Template> | null;
+  open: boolean;
+  onClose: () => void;
+  onSendToClient: (template: Template) => void;
+}
 
-  const { data: documents, isLoading: docsLoading } = useQuery<LegalDoc[]>({
-    queryKey: ["/api/admin/documents"],
-  });
+function TemplateEditorDialog({ template, open, onClose, onSendToClient }: TemplateEditorProps) {
+  const qc = useQueryClient();
+  const isNew = !template?.id;
 
-  const { data: templates, isLoading: templatesLoading } = useQuery<DocTemplate[]>({
-    queryKey: ["/api/admin/document-templates"],
-  });
+  const [name, setName] = useState(template?.name ?? "");
+  const [category, setCategory] = useState(template?.category ?? "service_agreement");
+  const [content, setContent] = useState(template?.content ?? "");
+  const [showPreview, setShowPreview] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const { data: clients } = useQuery<any[]>({
-    queryKey: ["/api/admin/clients"],
-  });
+  // Reset state when template changes
+  const resetState = useCallback(() => {
+    setName(template?.name ?? "");
+    setCategory(template?.category ?? "service_agreement");
+    setContent(template?.content ?? "");
+    setShowPreview(false);
+    setSaved(false);
+  }, [template]);
 
-  const [sendForm, setSendForm] = useState({
-    clientId: "",
-    templateId: "",
-    title: "",
-    category: "nda",
-    content: "",
-    dueDate: "",
-    required: true,
-  });
+  // Sync when dialog opens
+  const handleOpenChange = (o: boolean) => {
+    if (o) resetState();
+    if (!o) onClose();
+  };
 
-  const sendMutation = useMutation({
-    mutationFn: (data: any) => apiRequest("POST", "/api/admin/documents", data),
+  // Insert placeholder at cursor position
+  const insertPlaceholder = (placeholder: string) => {
+    const el = textareaRef.current;
+    if (!el) {
+      setContent((c) => c + placeholder);
+      return;
+    }
+    const start = el.selectionStart ?? content.length;
+    const end = el.selectionEnd ?? content.length;
+    const newContent = content.slice(0, start) + placeholder + content.slice(end);
+    setContent(newContent);
+    // Restore focus & cursor after state update
+    setTimeout(() => {
+      el.focus();
+      el.setSelectionRange(start + placeholder.length, start + placeholder.length);
+    }, 0);
+  };
+
+  const createMutation = useMutation({
+    mutationFn: (data: { name: string; category: string; content: string }) =>
+      apiRequest("POST", "/api/admin/document-templates", data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/documents"] });
-      toast({ title: "Document sent to client" });
-      setSendOpen(false);
-      setSendForm({ clientId: "", templateId: "", title: "", category: "nda", content: "", dueDate: "", required: true });
+      qc.invalidateQueries({ queryKey: ["/api/admin/document-templates"] });
+      setSaved(true);
     },
-    onError: () => toast({ title: "Error", variant: "destructive" }),
   });
 
-  const handleTemplateSelect = (templateId: string) => {
-    const tmpl = (templates || []).find((t) => String(t.id) === templateId);
-    if (tmpl) {
-      setSendForm({
-        ...sendForm,
-        templateId,
-        title: tmpl.name,
-        category: tmpl.category,
-        content: tmpl.content,
-      });
+  const updateMutation = useMutation({
+    mutationFn: (data: { name: string; category: string; content: string }) =>
+      apiRequest("PUT", `/api/admin/document-templates/${template?.id}`, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/document-templates"] });
+      setSaved(true);
+    },
+  });
+
+  const handleSave = () => {
+    const payload = { name, category, content };
+    if (isNew) {
+      createMutation.mutate(payload);
     } else {
-      setSendForm({ ...sendForm, templateId });
+      updateMutation.mutate(payload);
     }
   };
 
-  const handleSend = () => {
-    const client = (clients || []).find((c: any) => String(c.id) === sendForm.clientId);
-    if (!client || !client.project) return;
-    sendMutation.mutate({
-      projectId: client.project.id,
-      userId: client.id,
-      templateId: sendForm.templateId || null,
-      title: sendForm.title,
-      category: sendForm.category,
-      content: sendForm.content,
-      dueDate: sendForm.dueDate || null,
-      required: sendForm.required,
-    });
-  };
-
-  const isLoading = docsLoading || templatesLoading;
-
-  if (isLoading) {
-    return (
-      <div className="p-6 space-y-4">
-        <Skeleton className="h-8 w-56" />
-        {[1, 2, 3].map((i) => <Skeleton key={i} className="h-20" />)}
-      </div>
-    );
-  }
-
-  const docs = documents || [];
-  const tmpls = templates || [];
-
-  const byStatus = (s: string) => docs.filter((d) => d.status === s).length;
+  const isSaving = createMutation.isPending || updateMutation.isPending;
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-xl font-semibold text-foreground">Documents & Legal</h1>
-          <p className="text-sm text-muted-foreground mt-1">Manage templates, send documents, track signatures</p>
-        </div>
-        <Button
-          className="bg-[#B7542E] hover:bg-[#B7542E]/90 text-white"
-          onClick={() => setSendOpen(true)}
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent
+        className="max-w-[95vw] w-[1100px] h-[90vh] flex flex-col p-0 overflow-hidden"
+        style={{ backgroundColor: BRAND.ivory }}
+      >
+        {/* Header */}
+        <DialogHeader
+          className="px-6 pt-5 pb-3 border-b flex-shrink-0"
+          style={{ borderColor: BRAND.sand, backgroundColor: "#fff" }}
         >
-          <Send className="w-4 h-4 mr-1.5" /> Send Document
-        </Button>
-      </div>
+          <DialogTitle style={{ color: BRAND.charcoal, fontSize: "1.1rem", fontWeight: 700 }}>
+            {isNew ? "Create New Template" : "Edit Template"}
+          </DialogTitle>
+        </DialogHeader>
 
-      {/* Stats */}
-      <div className="grid grid-cols-4 gap-3">
-        {[
-          { label: "Total Sent", value: docs.length },
-          { label: "Awaiting Signature", value: byStatus("sent") + byStatus("viewed"), color: "text-yellow-600" },
-          { label: "Signed", value: byStatus("signed"), color: "text-green-600" },
-          { label: "Templates", value: tmpls.length },
-        ].map(({ label, value, color }) => (
-          <Card key={label} className="border shadow-sm">
-            <CardContent className="p-4 text-center">
-              <p className={`text-2xl font-bold ${color || "text-foreground"}`}>{value}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      <Tabs defaultValue="documents">
-        <TabsList>
-          <TabsTrigger value="documents">Client Documents ({docs.length})</TabsTrigger>
-          <TabsTrigger value="templates">Template Library ({tmpls.length})</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="documents" className="mt-4">
-          <Card className="border shadow-sm">
-            <CardContent className="pt-4">
-              <div className="space-y-2">
-                {docs.map((doc) => (
-                  <div
-                    key={doc.id}
-                    className="flex items-center gap-4 p-3 rounded-lg bg-muted/20 hover:bg-muted/40 transition-colors"
-                  >
-                    <FileText className={`w-5 h-5 flex-shrink-0 ${doc.status === "signed" ? "text-green-600" : "text-muted-foreground"}`} />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold">{doc.title}</p>
-                      <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground flex-wrap">
-                        <span className="flex items-center gap-0.5"><User className="w-3 h-3" /> {doc.client?.brandName}</span>
-                        <span>·</span>
-                        <span>{categoryLabels[doc.category] || doc.category}</span>
-                        {doc.signedAt && (
-                          <>
-                            <span>·</span>
-                            <span className="text-green-600">Signed {format(parseISO(doc.signedAt), "MMM d")}</span>
-                          </>
-                        )}
-                        {doc.dueDate && doc.status !== "signed" && (
-                          <>
-                            <span>·</span>
-                            <span className="text-yellow-600">Due {format(parseISO(doc.dueDate), "MMM d")}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${statusColors[doc.status] || ""}`}>
-                      {doc.status.charAt(0).toUpperCase() + doc.status.slice(1)}
-                    </span>
-                  </div>
-                ))}
-                {docs.length === 0 && (
-                  <div className="text-center py-10 text-muted-foreground">
-                    <FileText className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                    <p className="text-sm">No documents sent yet.</p>
-                  </div>
-                )}
+        {/* Body */}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Editor panel */}
+          <div className="flex flex-col flex-1 overflow-hidden p-6 gap-4">
+            {/* Name + Category row */}
+            <div className="flex gap-4">
+              <div className="flex-1">
+                <Label style={{ color: BRAND.charcoal, fontWeight: 600, fontSize: "0.8rem" }}>
+                  Template Name
+                </Label>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Master Service Agreement"
+                  className="mt-1"
+                  style={{ borderColor: BRAND.sand, backgroundColor: "#fff" }}
+                />
               </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="templates" className="mt-4">
-          <Card className="border shadow-sm">
-            <CardContent className="pt-4">
-              <div className="space-y-3">
-                {tmpls.map((tmpl) => (
-                  <div key={tmpl.id} className="p-4 rounded-lg bg-muted/20 border border-border/30">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <p className="text-sm font-semibold">{tmpl.name}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          {categoryLabels[tmpl.category] || tmpl.category}
-                        </p>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setSendForm({ ...sendForm, templateId: String(tmpl.id), title: tmpl.name, category: tmpl.category, content: tmpl.content });
-                          setSendOpen(true);
-                        }}
-                      >
-                        <Send className="w-3.5 h-3.5 mr-1" /> Use Template
-                      </Button>
-                    </div>
-                    <div className="mt-2 max-h-20 overflow-hidden">
-                      <pre className="text-xs text-muted-foreground whitespace-pre-wrap line-clamp-3 font-mono">
-                        {tmpl.content.slice(0, 200)}...
-                      </pre>
-                    </div>
-                  </div>
-                ))}
-                {tmpls.length === 0 && (
-                  <div className="text-center py-10 text-muted-foreground">
-                    <BookOpen className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                    <p className="text-sm">No templates yet.</p>
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
-
-      {/* Send Document Dialog */}
-      <Dialog open={sendOpen} onOpenChange={(o) => { if (!o) setSendOpen(false); }}>
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Send Document to Client</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div>
-              <label className="text-sm font-medium">Client</label>
-              <Select value={sendForm.clientId} onValueChange={(v) => setSendForm({ ...sendForm, clientId: v })}>
-                <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Select client..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {(clients || []).map((c: any) => (
-                    <SelectItem key={c.id} value={String(c.id)}>{c.brandName} — {c.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Template (optional)</label>
-              <Select value={sendForm.templateId} onValueChange={handleTemplateSelect}>
-                <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Select a template or create custom..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="custom">Custom Document</SelectItem>
-                  {tmpls.map((t) => (
-                    <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="text-sm font-medium">Document Title</label>
-              <Input
-                className="mt-1"
-                placeholder="e.g. Phase 3 Sign-Off"
-                value={sendForm.title}
-                onChange={(e) => setSendForm({ ...sendForm, title: e.target.value })}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-sm font-medium">Category</label>
-                <Select value={sendForm.category} onValueChange={(v) => setSendForm({ ...sendForm, category: v })}>
-                  <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+              <div className="w-56">
+                <Label style={{ color: BRAND.charcoal, fontWeight: 600, fontSize: "0.8rem" }}>
+                  Category
+                </Label>
+                <Select value={category} onValueChange={setCategory}>
+                  <SelectTrigger className="mt-1" style={{ borderColor: BRAND.sand, backgroundColor: "#fff" }}>
+                    <SelectValue />
+                  </SelectTrigger>
                   <SelectContent>
-                    {Object.entries(categoryLabels).map(([key, label]) => (
-                      <SelectItem key={key} value={key}>{label}</SelectItem>
+                    {CATEGORIES.map((c) => (
+                      <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
-              <div>
-                <label className="text-sm font-medium">Due Date (optional)</label>
-                <Input
-                  type="date"
-                  className="mt-1"
-                  value={sendForm.dueDate}
-                  onChange={(e) => setSendForm({ ...sendForm, dueDate: e.target.value })}
-                />
+            </div>
+
+            {/* Placeholder chips */}
+            <div>
+              <Label style={{ color: BRAND.charcoal, fontWeight: 600, fontSize: "0.8rem" }}>
+                Insert Placeholder
+              </Label>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {PLACEHOLDERS.map((ph) => (
+                  <button
+                    key={ph}
+                    type="button"
+                    onClick={() => insertPlaceholder(ph)}
+                    className="px-2.5 py-1 rounded-full text-xs font-semibold border transition-opacity hover:opacity-80 cursor-pointer"
+                    style={{
+                      backgroundColor: BRAND.terracotta,
+                      color: "#fff",
+                      borderColor: BRAND.terracotta,
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    {ph}
+                  </button>
+                ))}
               </div>
             </div>
-            <div>
-              <label className="text-sm font-medium">Document Content</label>
-              <textarea
-                className="mt-1 w-full h-32 px-3 py-2 text-xs rounded-md border border-input bg-background font-mono resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Document text content..."
-                value={sendForm.content}
-                onChange={(e) => setSendForm({ ...sendForm, content: e.target.value })}
-              />
+
+            {/* Textarea / Preview toggle */}
+            <div className="flex gap-2 items-center">
+              <button
+                type="button"
+                onClick={() => setShowPreview(false)}
+                className="text-xs font-semibold px-3 py-1 rounded transition-colors"
+                style={{
+                  backgroundColor: !showPreview ? BRAND.charcoal : "transparent",
+                  color: !showPreview ? "#fff" : BRAND.charcoal,
+                  border: `1px solid ${BRAND.charcoal}`,
+                }}
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowPreview(true)}
+                className="text-xs font-semibold px-3 py-1 rounded transition-colors"
+                style={{
+                  backgroundColor: showPreview ? BRAND.charcoal : "transparent",
+                  color: showPreview ? "#fff" : BRAND.charcoal,
+                  border: `1px solid ${BRAND.charcoal}`,
+                }}
+              >
+                Preview
+              </button>
             </div>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={sendForm.required}
-                onChange={(e) => setSendForm({ ...sendForm, required: e.target.checked })}
-                className="w-4 h-4 rounded"
+
+            {!showPreview ? (
+              <Textarea
+                ref={textareaRef}
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                className="flex-1 resize-none text-sm leading-relaxed"
+                style={{
+                  fontFamily: "'Courier New', Courier, monospace",
+                  backgroundColor: "#fff",
+                  borderColor: BRAND.sand,
+                  color: BRAND.charcoal,
+                  minHeight: "300px",
+                }}
+                placeholder="Paste or type the full legal document content here. Use placeholders like [CLIENT NAME], [DATE], etc."
               />
-              <span className="text-sm">Required before next phase begins</span>
-            </label>
+            ) : (
+              <ScrollArea className="flex-1 rounded border" style={{ borderColor: BRAND.sand, backgroundColor: "#fff" }}>
+                <div
+                  className="p-8 max-w-2xl mx-auto"
+                  style={{ color: BRAND.charcoal, lineHeight: 1.8 }}
+                >
+                  <DocumentPreview content={content} />
+                </div>
+              </ScrollArea>
+            )}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setSendOpen(false)}>Cancel</Button>
+        </div>
+
+        {/* Footer */}
+        <DialogFooter
+          className="px-6 py-4 border-t flex-shrink-0 flex flex-row justify-between items-center"
+          style={{ borderColor: BRAND.sand, backgroundColor: "#fff" }}
+        >
+          <div className="flex gap-2 items-center">
+            {saved && (
+              <span className="text-xs font-medium" style={{ color: "#059669" }}>
+                ✓ Saved successfully
+              </span>
+            )}
+            {(createMutation.isError || updateMutation.isError) && (
+              <span className="text-xs font-medium text-red-600">
+                Save failed — please try again
+              </span>
+            )}
+          </div>
+          <div className="flex gap-3">
             <Button
-              className="bg-[#B7542E] hover:bg-[#B7542E]/90 text-white"
-              disabled={!sendForm.clientId || !sendForm.title || !sendForm.content || sendMutation.isPending}
-              onClick={handleSend}
+              variant="outline"
+              onClick={onClose}
+              style={{ borderColor: BRAND.sand }}
             >
-              {sendMutation.isPending ? "Sending..." : "Send to Client"}
+              Close
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (template?.id) {
+                  onSendToClient({ id: template.id, name, category, content });
+                  onClose();
+                }
+              }}
+              disabled={isNew || !template?.id}
+              style={{
+                borderColor: BRAND.terracotta,
+                color: BRAND.terracotta,
+              }}
+            >
+              Send to Client →
+            </Button>
+            <Button
+              onClick={handleSave}
+              disabled={isSaving || !name.trim() || !content.trim()}
+              style={{ backgroundColor: BRAND.charcoal, color: "#fff" }}
+            >
+              {isSaving ? "Saving…" : isNew ? "Create Template" : "Save Changes"}
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Document Preview ─────────────────────────────────────────────────────────
+function DocumentPreview({ content }: { content: string }) {
+  if (!content.trim()) {
+    return (
+      <p className="text-sm italic" style={{ color: "#9CA3AF" }}>
+        No content to preview yet.
+      </p>
+    );
+  }
+
+  // Render markdown-ish content: headings, tables, bold, etc.
+  const lines = content.split("\n");
+  return (
+    <div className="space-y-1" style={{ fontFamily: "Georgia, serif", fontSize: "0.88rem" }}>
+      {lines.map((line, i) => {
+        if (line.startsWith("# ")) {
+          return <h1 key={i} className="text-xl font-bold mt-6 mb-2" style={{ color: BRAND.charcoal }}>{line.slice(2)}</h1>;
+        }
+        if (line.startsWith("## ")) {
+          return <h2 key={i} className="text-base font-bold mt-5 mb-1 uppercase tracking-wide" style={{ color: BRAND.charcoal }}>{line.slice(3)}</h2>;
+        }
+        if (line.startsWith("### ")) {
+          return <h3 key={i} className="text-sm font-bold mt-4 mb-1" style={{ color: BRAND.charcoal }}>{line.slice(4)}</h3>;
+        }
+        if (line.startsWith("---")) {
+          return <hr key={i} className="my-3" style={{ borderColor: BRAND.sand }} />;
+        }
+        if (line.startsWith("> ")) {
+          return (
+            <blockquote key={i} className="pl-4 border-l-4 italic text-sm my-2" style={{ borderColor: BRAND.terracotta, color: "#6B7280" }}>
+              {line.slice(2)}
+            </blockquote>
+          );
+        }
+        if (line.trim() === "") {
+          return <div key={i} className="h-2" />;
+        }
+        // Highlight placeholders in terracotta
+        const parts = line.split(/(\[[A-Z][A-Z\s/]+\])/g);
+        return (
+          <p key={i} className="leading-relaxed">
+            {parts.map((part, j) =>
+              /^\[[A-Z][A-Z\s/]+\]$/.test(part) ? (
+                <span key={j} className="font-semibold" style={{ color: BRAND.terracotta }}>
+                  {part}
+                </span>
+              ) : (
+                <span key={j}>{part}</span>
+              )
+            )}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Tab 1: Sent Documents ────────────────────────────────────────────────────
+function SentDocumentsTab({ clients }: { clients: Client[] }) {
+  const { data: docs = [], isLoading } = useQuery<SentDocument[]>({
+    queryKey: ["/api/admin/documents"],
+    queryFn: () => apiRequest("GET", "/api/admin/documents"),
+  });
+
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [clientFilter, setClientFilter] = useState<string>("all");
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  const getClientName = (userId?: number) => {
+    if (!userId) return "—";
+    const c = clients.find((cl) => cl.id === userId);
+    return c ? (c.name ?? c.email ?? `Client #${userId}`) : `Client #${userId}`;
+  };
+
+  const filtered = docs.filter((d) => {
+    if (statusFilter !== "all" && d.status !== statusFilter) return false;
+    if (clientFilter !== "all" && String(d.userId) !== clientFilter) return false;
+    return true;
+  });
+
+  return (
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 items-end">
+        <div>
+          <Label className="text-xs font-semibold mb-1 block" style={{ color: BRAND.charcoal }}>
+            Filter by Status
+          </Label>
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="w-40 h-8 text-xs" style={{ borderColor: BRAND.sand }}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Statuses</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="sent">Sent</SelectItem>
+              <SelectItem value="viewed">Viewed</SelectItem>
+              <SelectItem value="signed">Signed</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs font-semibold mb-1 block" style={{ color: BRAND.charcoal }}>
+            Filter by Client
+          </Label>
+          <Select value={clientFilter} onValueChange={setClientFilter}>
+            <SelectTrigger className="w-48 h-8 text-xs" style={{ borderColor: BRAND.sand }}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Clients</SelectItem>
+              {clients.map((c) => (
+                <SelectItem key={c.id} value={String(c.id)}>
+                  {c.name ?? c.email ?? `Client #${c.id}`}
+                  {c.brandName ? ` — ${c.brandName}` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="text-xs text-gray-500 self-end pb-0.5">
+          {filtered.length} of {docs.length} documents
+        </div>
+      </div>
+
+      {isLoading && (
+        <div className="py-12 text-center text-sm text-gray-500">Loading documents…</div>
+      )}
+
+      {!isLoading && filtered.length === 0 && (
+        <div
+          className="py-16 text-center rounded-lg border"
+          style={{ borderColor: BRAND.sand, backgroundColor: "#fff" }}
+        >
+          <p className="text-sm font-medium" style={{ color: BRAND.charcoal }}>No documents found</p>
+          <p className="text-xs text-gray-500 mt-1">
+            {docs.length === 0 ? "No documents have been sent yet." : "Try adjusting your filters."}
+          </p>
+        </div>
+      )}
+
+      {!isLoading && filtered.length > 0 && (
+        <div className="rounded-lg border overflow-hidden" style={{ borderColor: BRAND.sand }}>
+          {/* Table header */}
+          <div
+            className="grid text-xs font-semibold uppercase tracking-wide px-4 py-2.5"
+            style={{
+              gridTemplateColumns: "2fr 1.5fr 1fr 1fr 1fr 1fr",
+              backgroundColor: BRAND.charcoal,
+              color: BRAND.sand,
+            }}
+          >
+            <span>Title</span>
+            <span>Client</span>
+            <span>Status</span>
+            <span>Sent</span>
+            <span>Due</span>
+            <span>Signed</span>
+          </div>
+
+          {/* Rows */}
+          <div className="divide-y" style={{ divideColor: BRAND.sand }}>
+            {filtered.map((doc) => (
+              <div key={doc.id}>
+                <button
+                  type="button"
+                  className="w-full text-left hover:bg-orange-50 transition-colors"
+                  onClick={() => setExpandedId(expandedId === doc.id ? null : doc.id)}
+                  style={{ display: "grid", gridTemplateColumns: "2fr 1.5fr 1fr 1fr 1fr 1fr", padding: "12px 16px", alignItems: "center" }}
+                >
+                  <div>
+                    <span className="text-sm font-medium" style={{ color: BRAND.charcoal }}>
+                      {doc.title}
+                    </span>
+                    {doc.required && (
+                      <span className="ml-2 text-xs font-medium" style={{ color: BRAND.terracotta }}>
+                        Required
+                      </span>
+                    )}
+                    {doc.category && (
+                      <div className="mt-0.5">
+                        <CategoryBadge category={doc.category} />
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-sm" style={{ color: BRAND.charcoal }}>
+                    {getClientName(doc.userId)}
+                  </span>
+                  <StatusBadge status={doc.status} />
+                  <span className="text-xs text-gray-500">{fmt(doc.sentDate)}</span>
+                  <span className="text-xs text-gray-500">{fmt(doc.dueDate)}</span>
+                  <span className="text-xs text-gray-500">{fmt(doc.signedDate)}</span>
+                </button>
+
+                {expandedId === doc.id && (
+                  <div
+                    className="px-6 pb-6 pt-3"
+                    style={{ backgroundColor: BRAND.ivory, borderTop: `1px solid ${BRAND.sand}` }}
+                  >
+                    <div className="grid grid-cols-2 gap-6">
+                      <div>
+                        <h4 className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: BRAND.charcoal }}>
+                          Document Content
+                        </h4>
+                        <div
+                          className="rounded p-4 text-xs leading-relaxed max-h-80 overflow-y-auto"
+                          style={{
+                            backgroundColor: "#fff",
+                            border: `1px solid ${BRAND.sand}`,
+                            fontFamily: "'Courier New', monospace",
+                            whiteSpace: "pre-wrap",
+                            color: BRAND.charcoal,
+                          }}
+                        >
+                          {doc.content ?? "No content stored."}
+                        </div>
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: BRAND.charcoal }}>
+                          Signature Details
+                        </h4>
+                        {doc.signatureData ? (
+                          <div
+                            className="rounded p-4 text-xs"
+                            style={{ backgroundColor: "#fff", border: `1px solid ${BRAND.sand}` }}
+                          >
+                            <pre className="text-xs whitespace-pre-wrap break-all" style={{ color: BRAND.charcoal }}>
+                              {(() => {
+                                try {
+                                  return JSON.stringify(JSON.parse(doc.signatureData), null, 2);
+                                } catch {
+                                  return doc.signatureData;
+                                }
+                              })()}
+                            </pre>
+                          </div>
+                        ) : (
+                          <div
+                            className="rounded p-4 text-sm italic text-gray-400"
+                            style={{ backgroundColor: "#fff", border: `1px solid ${BRAND.sand}` }}
+                          >
+                            {doc.status === "signed" ? "Signature data not available." : "Not yet signed."}
+                          </div>
+                        )}
+                        <div className="mt-4 space-y-1 text-xs" style={{ color: BRAND.charcoal }}>
+                          <div><span className="font-semibold">Document ID:</span> #{doc.id}</div>
+                          {doc.projectId && <div><span className="font-semibold">Project ID:</span> #{doc.projectId}</div>}
+                          <div><span className="font-semibold">Required:</span> {doc.required ? "Yes" : "No"}</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Tab 2: Master Templates ──────────────────────────────────────────────────
+function MasterTemplatesTab({
+  onSendToClient,
+}: {
+  onSendToClient: (template: Template) => void;
+}) {
+  const qc = useQueryClient();
+  const { data: templates = [], isLoading } = useQuery<Template[]>({
+    queryKey: ["/api/admin/document-templates"],
+    queryFn: () => apiRequest("GET", "/api/admin/document-templates"),
+  });
+
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<Partial<Template> | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Template | null>(null);
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) =>
+      apiRequest("DELETE", `/api/admin/document-templates/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/document-templates"] });
+      setDeleteTarget(null);
+    },
+  });
+
+  const activeTemplates = templates.filter((t) => t.isActive !== 0);
+
+  const openEditor = (tpl: Partial<Template> | null) => {
+    setEditingTemplate(tpl);
+    setEditorOpen(true);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <p className="text-sm text-gray-500">
+          {activeTemplates.length} active template{activeTemplates.length !== 1 ? "s" : ""}
+        </p>
+        <Button
+          onClick={() => openEditor({})}
+          style={{ backgroundColor: BRAND.charcoal, color: "#fff" }}
+        >
+          + Create New Template
+        </Button>
+      </div>
+
+      {isLoading && (
+        <div className="py-12 text-center text-sm text-gray-500">Loading templates…</div>
+      )}
+
+      {!isLoading && activeTemplates.length === 0 && (
+        <div
+          className="py-16 text-center rounded-lg border"
+          style={{ borderColor: BRAND.sand, backgroundColor: "#fff" }}
+        >
+          <p className="text-sm font-medium" style={{ color: BRAND.charcoal }}>No templates yet</p>
+          <p className="text-xs text-gray-500 mt-1">Create your first legal template to get started.</p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {activeTemplates.map((tpl) => (
+          <Card
+            key={tpl.id}
+            className="flex flex-col"
+            style={{ backgroundColor: "#fff", borderColor: BRAND.sand }}
+          >
+            <CardHeader className="pb-2">
+              <div className="flex items-start justify-between gap-2">
+                <CardTitle className="text-sm font-bold leading-tight" style={{ color: BRAND.charcoal }}>
+                  {tpl.name}
+                </CardTitle>
+                <CategoryBadge category={tpl.category} />
+              </div>
+              {tpl.createdAt && (
+                <CardDescription className="text-xs">
+                  Created {fmt(tpl.createdAt)}
+                </CardDescription>
+              )}
+            </CardHeader>
+            <CardContent className="flex-1 pb-2">
+              <p
+                className="text-xs leading-relaxed line-clamp-4"
+                style={{
+                  color: "#6B7280",
+                  fontFamily: "'Courier New', monospace",
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {tpl.content?.slice(0, 220) ?? "No content."}
+                {(tpl.content?.length ?? 0) > 220 ? "…" : ""}
+              </p>
+            </CardContent>
+            <CardFooter className="pt-3 gap-2 flex-wrap border-t" style={{ borderColor: BRAND.sand }}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1 text-xs"
+                style={{ borderColor: BRAND.charcoal, color: BRAND.charcoal }}
+                onClick={() => openEditor(tpl)}
+              >
+                Edit Template
+              </Button>
+              <Button
+                size="sm"
+                className="flex-1 text-xs"
+                style={{ backgroundColor: BRAND.terracotta, color: "#fff", border: "none" }}
+                onClick={() => onSendToClient(tpl)}
+              >
+                Send to Client
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-xs text-red-400 hover:text-red-600 hover:bg-red-50"
+                onClick={() => setDeleteTarget(tpl)}
+              >
+                Delete
+              </Button>
+            </CardFooter>
+          </Card>
+        ))}
+      </div>
+
+      {/* Editor dialog */}
+      <TemplateEditorDialog
+        template={editingTemplate}
+        open={editorOpen}
+        onClose={() => { setEditorOpen(false); setEditingTemplate(null); }}
+        onSendToClient={(tpl) => {
+          setEditorOpen(false);
+          onSendToClient(tpl);
+        }}
+      />
+
+      {/* Delete confirmation */}
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent style={{ backgroundColor: BRAND.ivory }}>
+          <AlertDialogHeader>
+            <AlertDialogTitle style={{ color: BRAND.charcoal }}>Delete Template?</AlertDialogTitle>
+            <AlertDialogDescription>
+              "<strong>{deleteTarget?.name}</strong>" will be archived. This action can be reversed by a developer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget.id)}
+              style={{ backgroundColor: "#DC2626", color: "#fff" }}
+            >
+              {deleteMutation.isPending ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+// ─── Tab 3: Send Document ─────────────────────────────────────────────────────
+interface SendDocumentTabProps {
+  preselectedTemplateId?: number | null;
+  clients: Client[];
+}
+
+function SendDocumentTab({ preselectedTemplateId, clients }: SendDocumentTabProps) {
+  const qc = useQueryClient();
+  const { data: templates = [] } = useQuery<Template[]>({
+    queryKey: ["/api/admin/document-templates"],
+    queryFn: () => apiRequest("GET", "/api/admin/document-templates"),
+  });
+
+  const [templateId, setTemplateId] = useState<string>(
+    preselectedTemplateId ? String(preselectedTemplateId) : ""
+  );
+  const [clientId, setClientId] = useState<string>("");
+  const [editableContent, setEditableContent] = useState("");
+  const [title, setTitle] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [required, setRequired] = useState(false);
+  const [step, setStep] = useState(1);
+  const [showPreview, setShowPreview] = useState(false);
+
+  // Sync template selection when preselectedTemplateId changes from parent
+  const prevPreselected = useRef<number | null | undefined>(null);
+  if (prevPreselected.current !== preselectedTemplateId && preselectedTemplateId) {
+    prevPreselected.current = preselectedTemplateId;
+    setTemplateId(String(preselectedTemplateId));
+    setStep(1);
+  }
+
+  const selectedTemplate = templates.find((t) => String(t.id) === templateId);
+  const selectedClient = clients.find((c) => String(c.id) === clientId);
+
+  // Auto-fill placeholders when both template + client are chosen
+  const fillPlaceholders = useCallback(
+    (rawContent: string, client: Client | undefined) => {
+      if (!client) return rawContent;
+      let out = rawContent;
+      const clientName = client.name ?? client.email ?? "Client";
+      const brandName = client.brandName ?? "";
+      const projectName = client.projectName ?? "(project)";
+      out = out.replace(/\[CLIENT NAME\]/g, clientName);
+      out = out.replace(
+        /\[CLIENT LEGAL NAME\]/g,
+        brandName ? `${clientName} d/b/a ${brandName}` : clientName
+      );
+      out = out.replace(
+        /\[CLIENT ADDRESS\]/g,
+        "(to be provided)"
+      );
+      out = out.replace(/\[DATE\]/g, todayFormatted());
+      out = out.replace(/\[PROJECT NAME\]/g, projectName);
+      out = out.replace(/\[BRAND NAME\]/g, brandName || clientName);
+      return out;
+    },
+    []
+  );
+
+  // When template changes, reset content
+  const handleTemplateChange = (val: string) => {
+    setTemplateId(val);
+    const tpl = templates.find((t) => String(t.id) === val);
+    if (tpl) {
+      setTitle(tpl.name);
+      setEditableContent(fillPlaceholders(tpl.content, selectedClient));
+    }
+  };
+
+  // When client changes, re-fill placeholders from scratch
+  const handleClientChange = (val: string) => {
+    setClientId(val);
+    const client = clients.find((c) => String(c.id) === val);
+    if (selectedTemplate) {
+      setEditableContent(fillPlaceholders(selectedTemplate.content, client));
+    }
+  };
+
+  const sendMutation = useMutation({
+    mutationFn: (payload: Record<string, unknown>) =>
+      apiRequest("POST", "/api/admin/documents", payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/documents"] });
+      setStep(7); // success step
+    },
+  });
+
+  const handleSend = () => {
+    sendMutation.mutate({
+      templateId: selectedTemplate?.id,
+      userId: selectedClient?.id,
+      projectId: null,
+      title,
+      category: selectedTemplate?.category ?? "other",
+      content: editableContent,
+      dueDate: dueDate || null,
+      required,
+    });
+  };
+
+  const canProceedStep1 = !!templateId;
+  const canProceedStep2 = !!clientId;
+
+  return (
+    <div className="max-w-3xl">
+      {step === 7 ? (
+        // Success state
+        <div
+          className="rounded-lg border p-12 text-center"
+          style={{ borderColor: "#059669", backgroundColor: "#ECFDF5" }}
+        >
+          <div className="text-4xl mb-3">✓</div>
+          <h3 className="text-lg font-bold" style={{ color: "#065F46" }}>
+            Document Sent Successfully
+          </h3>
+          <p className="text-sm text-green-700 mt-1">
+            "{title}" has been sent to {selectedClient?.name ?? "the client"}.
+          </p>
+          <Button
+            className="mt-6"
+            onClick={() => {
+              setStep(1);
+              setTemplateId("");
+              setClientId("");
+              setEditableContent("");
+              setTitle("");
+              setDueDate("");
+              setRequired(false);
+              setShowPreview(false);
+            }}
+            style={{ backgroundColor: BRAND.charcoal, color: "#fff" }}
+          >
+            Send Another Document
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {/* Step progress */}
+          <div className="flex items-center gap-1">
+            {[1, 2, 3, 4, 5].map((s) => (
+              <div key={s} className="flex items-center gap-1">
+                <div
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold"
+                  style={{
+                    backgroundColor: step >= s ? BRAND.charcoal : BRAND.sand,
+                    color: step >= s ? "#fff" : BRAND.charcoal,
+                  }}
+                >
+                  {s}
+                </div>
+                {s < 5 && (
+                  <div
+                    className="w-10 h-0.5"
+                    style={{ backgroundColor: step > s ? BRAND.charcoal : BRAND.sand }}
+                  />
+                )}
+              </div>
+            ))}
+            <span className="ml-3 text-xs text-gray-500">
+              {["Select Template", "Select Client", "Edit Content", "Document Details", "Review & Send"][step - 1]}
+            </span>
+          </div>
+
+          {/* Step 1: Select Template */}
+          {step === 1 && (
+            <Card style={{ borderColor: BRAND.sand }}>
+              <CardHeader>
+                <CardTitle className="text-sm" style={{ color: BRAND.charcoal }}>Step 1 — Select a Template</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Select value={templateId} onValueChange={handleTemplateChange}>
+                  <SelectTrigger style={{ borderColor: BRAND.sand }}>
+                    <SelectValue placeholder="Choose a legal template…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {templates
+                      .filter((t) => t.isActive !== 0)
+                      .map((t) => (
+                        <SelectItem key={t.id} value={String(t.id)}>
+                          {t.name}
+                          <span className="ml-2 text-xs text-gray-400">
+                            ({CATEGORIES.find((c) => c.value === t.category)?.label ?? t.category})
+                          </span>
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+                {selectedTemplate && (
+                  <div
+                    className="mt-4 p-3 rounded text-xs leading-relaxed line-clamp-5"
+                    style={{
+                      backgroundColor: BRAND.ivory,
+                      border: `1px solid ${BRAND.sand}`,
+                      fontFamily: "'Courier New', monospace",
+                      color: BRAND.charcoal,
+                    }}
+                  >
+                    {selectedTemplate.content.slice(0, 400)}…
+                  </div>
+                )}
+              </CardContent>
+              <CardFooter className="justify-end">
+                <Button
+                  disabled={!canProceedStep1}
+                  onClick={() => setStep(2)}
+                  style={{ backgroundColor: BRAND.charcoal, color: "#fff" }}
+                >
+                  Next: Select Client →
+                </Button>
+              </CardFooter>
+            </Card>
+          )}
+
+          {/* Step 2: Select Client */}
+          {step === 2 && (
+            <Card style={{ borderColor: BRAND.sand }}>
+              <CardHeader>
+                <CardTitle className="text-sm" style={{ color: BRAND.charcoal }}>Step 2 — Select a Client</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Select value={clientId} onValueChange={handleClientChange}>
+                  <SelectTrigger style={{ borderColor: BRAND.sand }}>
+                    <SelectValue placeholder="Choose a client…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {clients.map((c) => (
+                      <SelectItem key={c.id} value={String(c.id)}>
+                        {c.name ?? c.email ?? `Client #${c.id}`}
+                        {c.brandName ? ` — ${c.brandName}` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedClient && (
+                  <div
+                    className="mt-4 p-3 rounded text-xs space-y-1"
+                    style={{ backgroundColor: BRAND.ivory, border: `1px solid ${BRAND.sand}` }}
+                  >
+                    {selectedClient.name && <div><span className="font-semibold">Name:</span> {selectedClient.name}</div>}
+                    {selectedClient.brandName && <div><span className="font-semibold">Brand:</span> {selectedClient.brandName}</div>}
+                    {selectedClient.email && <div><span className="font-semibold">Email:</span> {selectedClient.email}</div>}
+                    {selectedClient.projectName && <div><span className="font-semibold">Project:</span> {selectedClient.projectName}</div>}
+                    <div className="pt-1 text-green-700 font-medium">
+                      ✓ Placeholders will be auto-filled from this profile
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+              <CardFooter className="justify-between">
+                <Button variant="outline" onClick={() => setStep(1)} style={{ borderColor: BRAND.sand }}>
+                  ← Back
+                </Button>
+                <Button
+                  disabled={!canProceedStep2}
+                  onClick={() => setStep(3)}
+                  style={{ backgroundColor: BRAND.charcoal, color: "#fff" }}
+                >
+                  Next: Edit Content →
+                </Button>
+              </CardFooter>
+            </Card>
+          )}
+
+          {/* Step 3: Edit Content */}
+          {step === 3 && (
+            <Card style={{ borderColor: BRAND.sand }}>
+              <CardHeader>
+                <CardTitle className="text-sm" style={{ color: BRAND.charcoal }}>Step 3 — Review & Edit Document Content</CardTitle>
+                <CardDescription className="text-xs">
+                  Placeholders have been auto-filled where possible. Review and edit as needed.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowPreview(false)}
+                    className="text-xs font-semibold px-3 py-1 rounded"
+                    style={{
+                      backgroundColor: !showPreview ? BRAND.charcoal : "transparent",
+                      color: !showPreview ? "#fff" : BRAND.charcoal,
+                      border: `1px solid ${BRAND.charcoal}`,
+                    }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowPreview(true)}
+                    className="text-xs font-semibold px-3 py-1 rounded"
+                    style={{
+                      backgroundColor: showPreview ? BRAND.charcoal : "transparent",
+                      color: showPreview ? "#fff" : BRAND.charcoal,
+                      border: `1px solid ${BRAND.charcoal}`,
+                    }}
+                  >
+                    Preview
+                  </button>
+                </div>
+
+                {!showPreview ? (
+                  <Textarea
+                    value={editableContent}
+                    onChange={(e) => setEditableContent(e.target.value)}
+                    rows={18}
+                    className="text-xs leading-relaxed resize-none"
+                    style={{
+                      fontFamily: "'Courier New', monospace",
+                      borderColor: BRAND.sand,
+                      backgroundColor: "#fff",
+                      color: BRAND.charcoal,
+                    }}
+                  />
+                ) : (
+                  <ScrollArea className="h-96 rounded border" style={{ borderColor: BRAND.sand, backgroundColor: "#fff" }}>
+                    <div className="p-6 max-w-xl mx-auto" style={{ color: BRAND.charcoal }}>
+                      <DocumentPreview content={editableContent} />
+                    </div>
+                  </ScrollArea>
+                )}
+              </CardContent>
+              <CardFooter className="justify-between">
+                <Button variant="outline" onClick={() => setStep(2)} style={{ borderColor: BRAND.sand }}>
+                  ← Back
+                </Button>
+                <Button
+                  onClick={() => setStep(4)}
+                  style={{ backgroundColor: BRAND.charcoal, color: "#fff" }}
+                >
+                  Next: Document Details →
+                </Button>
+              </CardFooter>
+            </Card>
+          )}
+
+          {/* Step 4: Document Details */}
+          {step === 4 && (
+            <Card style={{ borderColor: BRAND.sand }}>
+              <CardHeader>
+                <CardTitle className="text-sm" style={{ color: BRAND.charcoal }}>Step 4 — Document Details</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
+                  <Label className="text-xs font-semibold" style={{ color: BRAND.charcoal }}>
+                    Document Title
+                  </Label>
+                  <Input
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="e.g. Master Service Agreement — Studio Noir"
+                    className="mt-1"
+                    style={{ borderColor: BRAND.sand }}
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs font-semibold" style={{ color: BRAND.charcoal }}>
+                    Due Date (optional)
+                  </Label>
+                  <Input
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => setDueDate(e.target.value)}
+                    className="mt-1 w-52"
+                    style={{ borderColor: BRAND.sand }}
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="required"
+                    checked={required}
+                    onCheckedChange={(v) => setRequired(!!v)}
+                  />
+                  <Label htmlFor="required" className="text-sm cursor-pointer" style={{ color: BRAND.charcoal }}>
+                    Mark as required (client must sign before proceeding)
+                  </Label>
+                </div>
+              </CardContent>
+              <CardFooter className="justify-between">
+                <Button variant="outline" onClick={() => setStep(3)} style={{ borderColor: BRAND.sand }}>
+                  ← Back
+                </Button>
+                <Button
+                  disabled={!title.trim()}
+                  onClick={() => setStep(5)}
+                  style={{ backgroundColor: BRAND.charcoal, color: "#fff" }}
+                >
+                  Next: Review →
+                </Button>
+              </CardFooter>
+            </Card>
+          )}
+
+          {/* Step 5: Preview & Send */}
+          {step === 5 && (
+            <Card style={{ borderColor: BRAND.sand }}>
+              <CardHeader>
+                <CardTitle className="text-sm" style={{ color: BRAND.charcoal }}>Step 5 — Review & Send</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Summary */}
+                <div
+                  className="rounded-lg p-4 text-sm space-y-2"
+                  style={{ backgroundColor: BRAND.ivory, border: `1px solid ${BRAND.sand}` }}
+                >
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div><span className="font-semibold" style={{ color: BRAND.charcoal }}>Title:</span> {title}</div>
+                    <div><span className="font-semibold" style={{ color: BRAND.charcoal }}>Client:</span> {selectedClient?.name ?? "—"}</div>
+                    <div><span className="font-semibold" style={{ color: BRAND.charcoal }}>Template:</span> {selectedTemplate?.name ?? "—"}</div>
+                    <div><span className="font-semibold" style={{ color: BRAND.charcoal }}>Category:</span> <CategoryBadge category={selectedTemplate?.category ?? "other"} /></div>
+                    <div><span className="font-semibold" style={{ color: BRAND.charcoal }}>Due Date:</span> {dueDate ? fmt(dueDate) : "None"}</div>
+                    <div><span className="font-semibold" style={{ color: BRAND.charcoal }}>Required:</span> {required ? "Yes" : "No"}</div>
+                  </div>
+                </div>
+
+                {/* Document preview */}
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wide mb-2" style={{ color: BRAND.charcoal }}>
+                    Final Document Preview
+                  </h4>
+                  <ScrollArea
+                    className="h-80 rounded border"
+                    style={{ borderColor: BRAND.sand, backgroundColor: "#fff" }}
+                  >
+                    <div
+                      className="p-8 max-w-xl mx-auto"
+                      style={{ color: BRAND.charcoal }}
+                    >
+                      <DocumentPreview content={editableContent} />
+                    </div>
+                  </ScrollArea>
+                </div>
+
+                {sendMutation.isError && (
+                  <div className="text-xs text-red-600 font-medium">
+                    Failed to send — please check your connection and try again.
+                  </div>
+                )}
+              </CardContent>
+              <CardFooter className="justify-between">
+                <Button variant="outline" onClick={() => setStep(4)} style={{ borderColor: BRAND.sand }}>
+                  ← Back
+                </Button>
+                <Button
+                  onClick={handleSend}
+                  disabled={sendMutation.isPending}
+                  style={{ backgroundColor: BRAND.terracotta, color: "#fff", fontWeight: 700 }}
+                >
+                  {sendMutation.isPending ? "Sending…" : "Send Document →"}
+                </Button>
+              </CardFooter>
+            </Card>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Page Component ──────────────────────────────────────────────────────
+export default function AdminDocumentsPage() {
+  const [activeTab, setActiveTab] = useState("sent");
+  const [sendTemplateId, setSendTemplateId] = useState<number | null>(null);
+
+  const { data: clients = [] } = useQuery<Client[]>({
+    queryKey: ["/api/admin/clients"],
+    queryFn: () => apiRequest("GET", "/api/admin/clients"),
+  });
+
+  const handleSendToClient = (template: Template) => {
+    setSendTemplateId(template.id);
+    setActiveTab("send");
+  };
+
+  return (
+    <div
+      className="min-h-screen p-6"
+      style={{ backgroundColor: BRAND.ivory, fontFamily: "Inter, system-ui, sans-serif" }}
+    >
+      {/* Page header */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold" style={{ color: BRAND.charcoal }}>
+          Legal Documents
+        </h1>
+        <p className="text-sm text-gray-500 mt-1">
+          Manage templates, sent documents, and client agreements.
+        </p>
+      </div>
+
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList
+          className="mb-6"
+          style={{ backgroundColor: BRAND.sand }}
+        >
+          <TabsTrigger
+            value="sent"
+            style={{ fontWeight: 600, fontSize: "0.85rem" }}
+          >
+            Sent Documents
+          </TabsTrigger>
+          <TabsTrigger
+            value="templates"
+            style={{ fontWeight: 600, fontSize: "0.85rem" }}
+          >
+            Master Templates
+          </TabsTrigger>
+          <TabsTrigger
+            value="send"
+            style={{ fontWeight: 600, fontSize: "0.85rem" }}
+          >
+            Send Document
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="sent">
+          <SentDocumentsTab clients={clients} />
+        </TabsContent>
+
+        <TabsContent value="templates">
+          <MasterTemplatesTab onSendToClient={handleSendToClient} />
+        </TabsContent>
+
+        <TabsContent value="send">
+          <SendDocumentTab
+            preselectedTemplateId={sendTemplateId}
+            clients={clients}
+          />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
