@@ -460,6 +460,13 @@ sqlite.exec(`
   );
 `);
 
+// Migrations — safely add columns to existing tables
+try { sqlite.exec(`ALTER TABLE users ADD COLUMN onboarding_status TEXT NOT NULL DEFAULT 'not_started'`); } catch (e) { /* column already exists */ }
+try { sqlite.exec(`ALTER TABLE projects ADD COLUMN total_hours INTEGER DEFAULT 0`); } catch (e) {}
+try { sqlite.exec(`ALTER TABLE projects ADD COLUMN total_cost INTEGER DEFAULT 0`); } catch (e) {}
+try { sqlite.exec(`ALTER TABLE projects ADD COLUMN paid_amount INTEGER DEFAULT 0`); } catch (e) {}
+try { sqlite.exec(`ALTER TABLE projects ADD COLUMN created_at TEXT`); } catch (e) {}
+
 export class DatabaseStorage implements IStorage {
   getUserByEmail(email: string): User | undefined {
     return db.select().from(users).where(eq(users.email, email)).get();
