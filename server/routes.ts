@@ -1436,6 +1436,33 @@ export async function registerRoutes(server: Server, app: Express) {
     return res.json(record);
   });
 
+
+  // POST /api/onboarding/complete-step
+  app.post("/api/onboarding/complete-step", requireAuth, (req, res) => {
+    try {
+      const userId = (req.session as any).userId;
+      const { step, data } = req.body;
+      if (!step) return res.status(400).json({ message: "Step is required" });
+      let record = storage.getOnboardingByUserId(userId);
+      if (!record) { record = storage.createOnboarding({ userId }); }
+      const stepMap = { welcome: 1, brand_profile: 2, how_it_works: 3, portal_tour: 4, key_documents: 5, signoff: 6 };
+      const stepNum = typeof step === "number" ? step : stepMap[step] || 0;
+      if (stepNum >= 1 && stepNum <= 6) { storage.updateOnboardingStep(userId, stepNum); }
+      const updated = storage.getOnboardingByUserId(userId);
+      const completedSteps = [];
+      const nameMap = ["welcome", "brand_profile", "how_it_works", "portal_tour", "key_documents", "signoff"];
+      if (updated) {
+        if (updated.step1Viewed) completedSteps.push(nameMap[0]);
+        if (updated.step2Viewed) completedSteps.push(nameMap[1]);
+        if (updated.step3Viewed) completedSteps.push(nameMap[2]);
+        if (updated.step4Viewed) completedSteps.push(nameMap[3]);
+        if (updated.step5Viewed) completedSteps.push(nameMap[4]);
+        if (updated.step6Completed) completedSteps.push(nameMap[5]);
+      }
+      return res.json({ ...updated, completedSteps, currentStep: step });
+    } catch (e) { return res.status(500).json({ message: e.message }); }
+  });
+
   // PATCH /api/onboarding/step/:step
   app.patch("/api/onboarding/step/:step", requireAuth, (req, res) => {
     const userId = (req.session as any).userId;
